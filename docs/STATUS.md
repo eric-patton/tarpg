@@ -53,7 +53,7 @@ When you `run`, you get:
 - **Window**: 80×30 cells. Square-cells mode active (12×12 Milazzo CP437 font), so window is 960×360 px at 1× zoom.
 - **HUD** (top row): walker name, HP, current target HP, current zoom level.
 - **Scaffold map**: 80×30 bordered room, interior wall with a door (`+`), threshold tile (`>`).
-- **FOV / fog of war**: only a 10-tile radius around the player renders in full color; explored-but-not-currently-visible tiles render dim (RGB × 0.3); never-explored tiles render black. Walls and doors block sight. Enemy sprites are hidden when their tile is outside the player's FOV.
+- **FOV / fog of war**: a circular 10-tile radius around the player renders in full color; explored-but-not-currently-visible tiles render dim (RGB × 0.5); never-explored tiles render black. Walls and doors block sight. Enemy sprites are hidden when their tile is outside the player's FOV.
 - **Player** `@` (Reaver, red glyph) spawns center, glides smoothly toward cursor at 8 tiles/sec.
 - **Two `w` wolves** spawn (one upper-left, one lower-right of player). They have HP and die. They don't move or fight back yet.
 - **A\* pathfinding** around walls, axis-separated wall-slide collision, line-of-sight optimization.
@@ -82,7 +82,7 @@ When you `run`, you get:
 | `RenderSettings.UseSquareCells` | `true` (Option B) | `Core/RenderSettings.cs` |
 | `RenderSettings.SquareFontPath` | `"Content/font_12x12.font"` | same |
 | `RenderSettings.EnableFov` | `true` (debug-bisection toggle) | same |
-| `RenderSettings.UnseenDimFactor` | `0.3f` | same |
+| `RenderSettings.UnseenDimFactor` | `0.5f` | same |
 | `GameScreen.FovRadius` | `10` (will move to `ModifierContext.FieldOfViewRadius` once context is plumbed in) | `UI/GameScreen.cs` |
 | `ModifierContext.FieldOfViewRadius` | `10.0f` (canonical baseline; matches `GameScreen.FovRadius`) | `Modifiers/ModifierContext.cs` |
 
@@ -91,7 +91,7 @@ When you `run`, you get:
 ## Recently completed (newest first)
 
 ### FOV / fog of war
-- **`World/Map.cs`** — added `ComputeFovFor(viewer, radius)`, `IsInFov(p)`, `IsExploredAt(p)` thin pass-throughs. RogueSharp's `IMap` already tracks `IsInFov` / `IsExplored` per cell internally; we just call into it. `lightWalls: true` so opaque tiles at the FOV boundary remain visible.
+- **`World/Map.cs`** — added `ComputeFovFor(viewer, radius)`, `IsInFov(p)`, `IsExploredAt(p)`. Visibility / explored state is owned by `Map` (parallel `bool[,]` arrays), not RogueSharp. RogueSharp's `ComputeFov` is called with a Manhattan radius of `⌈radius·√2⌉` (so its diamond fully contains our desired Euclidean circle), then we walk the bounding box of the circle and only mark a tile visible if both RogueSharp says it has LOS *and* its Euclidean distance from the viewer is within radius. Result: properly circular reveal shape, correct shadowcast LOS through walls, and an explored layer we own (not dependent on RogueSharp's stickiness behavior).
 - **`World/Tile.cs`** — deleted unused `IsVisible` / `IsExplored` properties (single source of truth lives on the wrapped RogueSharp map).
 - **`UI/GameScreen.cs`** — added `FovRadius = 10` const + `_lastPlayerTile` sentinel field. Ctor seeds FOV after player spawn so the first paint is already FOV-aware (no reveal flash). `Update` recomputes FOV only when the player crosses a tile boundary. `DrawMap` now runs every tick with three branches: in-FOV → full color; explored → dim (RGB × 0.3 via a `Dim(Color, float)` helper); unseen → blank black. Enemy visuals get `IsVisible` set from `_map.IsInFov(entity.Position)` in `SyncVisual`.
 - **`Modifiers/ModifierContext.cs`** — bumped `FieldOfViewRadius` default 8.0f → 10.0f to match `GameScreen.FovRadius` so future modifier code stacks against the same canonical baseline.

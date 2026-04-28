@@ -25,7 +25,9 @@ public static class RenderSettings
     public static readonly bool EnableFov = true;
 
     // RGB multiplier applied to explored-but-not-currently-visible tiles.
-    // 0.3 is the spec value from docs/STATUS.md and looks right against the
-    // 12x12 Milazzo font on a black background.
-    public static readonly float UnseenDimFactor = 0.3f;
+    // 0.3 was the original spec but rendered floor tiles (foreground 80,80,80)
+    // at (24,24,24) — basically invisible against the black background. 0.5
+    // brings floor to (40,40,40) and walls to (80,70,55), which reads as a
+    // distinct dimmed-but-visible memory layer.
+    public static readonly float UnseenDimFactor = 0.5f;
 }

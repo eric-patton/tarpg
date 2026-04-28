@@ -8,6 +8,13 @@ public sealed class Map
     private readonly Tile[,] _tiles;
     private readonly RogueSharp.Map _rogueMap;
 
+    // Visibility / explored state owned here, not delegated to RogueSharp,
+    // so the Euclidean-circle mask we apply on top of RogueSharp's diamond
+    // FOV is the canonical truth for both the renderer and any future
+    // gameplay code that needs "is this tile visible?".
+    private readonly bool[,] _visible;
+    private readonly bool[,] _explored;
+
     public int Width { get; }
     public int Height { get; }
 
@@ -17,6 +24,8 @@ public sealed class Map
         Height = height;
         _tiles = new Tile[width, height];
         _rogueMap = new RogueSharp.Map(width, height);
+        _visible = new bool[width, height];
+        _explored = new bool[width, height];
 
         for (var x = 0; x < width; x++)
         for (var y = 0; y < height; y++)
@@ -48,18 +57,41 @@ public sealed class Map
     // Wraps the underlying RogueSharp map for FOV / pathfinding consumers.
     public RogueSharp.Map RogueMap => _rogueMap;
 
-    // Recomputes RogueSharp's FOV in-place around the viewer. Each call clears
-    // the prior IsInFov flags; IsExplored is sticky. lightWalls=true makes
-    // opaque tiles at the FOV boundary themselves visible (so you see the wall
-    // you're up against), which matches the standard roguelike expectation.
-    public void ComputeFovFor(Position viewer, int radius) =>
-        _rogueMap.ComputeFov(viewer.X, viewer.Y, radius, lightWalls: true);
+    // Recompute the player's FOV. RogueSharp's ComputeFov uses Manhattan
+    // distance internally, so its raw output is a 45°-rotated diamond. We
+    // call it with a Manhattan radius wide enough to fully contain our
+    // desired Euclidean circle (radius * √2), then walk the bounding box of
+    // the circle and only mark tiles visible if both:
+    //   (a) RogueSharp's shadowcast says they have LOS from the viewer, and
+    //   (b) their Euclidean distance from the viewer is within the radius.
+    // This gives us correct LOS through walls plus a properly circular
+    // reveal shape. Explored is sticky in our own array — once true, stays
+    // true until a fresh Map is built.
+    public void ComputeFovFor(Position viewer, int radius)
+    {
+        var manhattanRadius = (int)Math.Ceiling(radius * Math.Sqrt(2));
+        _rogueMap.ComputeFov(viewer.X, viewer.Y, manhattanRadius, lightWalls: true);
+
+        Array.Clear(_visible, 0, _visible.Length);
+        var rSq = radius * radius;
+        for (var dy = -radius; dy <= radius; dy++)
+        for (var dx = -radius; dx <= radius; dx++)
+        {
+            if (dx * dx + dy * dy > rSq) continue;
+            var x = viewer.X + dx;
+            var y = viewer.Y + dy;
+            if (x < 0 || x >= Width || y < 0 || y >= Height) continue;
+            if (!_rogueMap.IsInFov(x, y)) continue;
+            _visible[x, y] = true;
+            _explored[x, y] = true;
+        }
+    }
 
     public bool IsInFov(Position p) =>
-        InBounds(p) && _rogueMap.IsInFov(p.X, p.Y);
+        InBounds(p) && _visible[p.X, p.Y];
 
     public bool IsExploredAt(Position p) =>
-        InBounds(p) && _rogueMap.IsExplored(p.X, p.Y);
+        InBounds(p) && _explored[p.X, p.Y];
 
     // Computes A* path from start to end (excluding start, including end).
     // Returns null if no path exists.
