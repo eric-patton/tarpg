@@ -34,12 +34,26 @@ public abstract class Entity
     public void SetTile(Position p) =>
         ContinuousPosition = new Vector2(p.X + 0.5f, p.Y + 0.5f);
 
+    // Fires after Health is decremented by TakeDamage. Subscribers receive
+    // the entity that was hit and the actual damage applied (after clamping
+    // at zero). UI/Effects/HitFeedback listens here for flash + damage-number
+    // spawning. Future systems (audio, on-hit modifiers) can pile on.
+    public event Action<Entity, int>? Damaged;
+
+    // Fires once when Health crosses to zero from a TakeDamage call. Does
+    // not re-fire on subsequent damage to a corpse.
+    public event Action<Entity>? Died;
+
     // Subtracts damage from Health, clamped at zero. Combat / future skill
     // resolution funnels through here so we have one place to hook on-hit
     // effects, damage logging, and (later) the juice pass.
     public void TakeDamage(int amount)
     {
         if (amount <= 0) return;
-        Health = Math.Max(0, Health - amount);
+        var wasAlive = Health > 0;
+        var applied = Math.Min(amount, Health);
+        Health -= applied;
+        Damaged?.Invoke(this, applied);
+        if (wasAlive && Health == 0) Died?.Invoke(this);
     }
 }

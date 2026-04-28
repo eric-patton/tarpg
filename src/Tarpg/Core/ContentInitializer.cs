@@ -69,5 +69,6 @@ public static class ContentInitializer
         [typeof(EnemyDefinition)]       = e => Registries.Enemies.Register((EnemyDefinition)e),
         [typeof(ModifierDefinition)]    = e => Registries.Modifiers.Register((ModifierDefinition)e),
         [typeof(BossDefinition)]        = e => Registries.Bosses.Register((BossDefinition)e),
+        [typeof(ZoneDefinition)]        = e => Registries.Zones.Register((ZoneDefinition)e),
     };
 }

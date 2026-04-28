@@ -20,4 +20,5 @@ public static class Registries
     public static readonly Registry<EnemyDefinition>       Enemies   = new();
     public static readonly Registry<ModifierDefinition>    Modifiers = new();
     public static readonly Registry<BossDefinition>        Bosses    = new();
+    public static readonly Registry<ZoneDefinition>        Zones     = new();
 }

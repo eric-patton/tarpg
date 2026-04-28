@@ -8,14 +8,18 @@ using Tarpg.Core;
 using Tarpg.Enemies;
 using Tarpg.Entities;
 using Tarpg.Movement;
+using Tarpg.UI.Effects;
 using Tarpg.World;
 using SadEntity = SadConsole.Entities.Entity;
 using SadEntityManager = SadConsole.Entities.EntityManager;
 
 namespace Tarpg.UI;
 
-// v0 scaffold screen with the first enemy. Tiles redraw each tick with
-// FOV-aware visibility (full / dim / hidden). Player and enemies are
+// Game screen orchestrator. On construction, asks the configured zone
+// (currently "wolfwood") for a freshly generated floor, spawns the player
+// at its entry tile and wolves at its enemy spawn points, then drives the
+// per-tick movement / combat / FOV / render loop. Tiles redraw each tick
+// with FOV-aware visibility (full / dim / hidden). Player and enemies are
 // SadConsole Entities with pixel positioning, driven by MovementController
 // (continuous) and CombatController (auto-attack melee).
 public sealed class GameScreen : SadConsole.Console
@@ -40,12 +44,14 @@ public sealed class GameScreen : SadConsole.Console
     // (currently 10.0f) once modifier-context plumbing reaches the renderer.
     private const int FovRadius = 10;
 
-    private readonly Map _map;
+    // Not readonly — RegenerateFloor swaps in a fresh Map on player death.
+    private Map _map;
     private readonly Player _player;
     private readonly MovementController _movement = new();
     private readonly CombatController _combat = new();
     private readonly SadEntityManager _entityManager;
     private readonly SadEntity _playerEntity;
+    private readonly HitFeedback _hitFeedback;
 
     private readonly List<Enemy> _enemies = new();
     private readonly Dictionary<Enemy, SadEntity> _enemyVisuals = new();
@@ -65,8 +71,13 @@ public sealed class GameScreen : SadConsole.Console
         IsFocused = true;
         FocusOnMouseClick = true;
 
-        _map = BuildScaffoldMap(width, height);
-        _player = Player.Create(Reaver.Definition, new Position(width / 2, height / 2));
+        var zone = Registries.Zones.Get("wolfwood");
+        var seed = Environment.TickCount;
+        System.Console.WriteLine($"[Tarpg] Generating {zone.Name} (seed {seed})");
+        var floor = zone.Generator.Generate(width, height, seed);
+
+        _map = floor.Map;
+        _player = Player.Create(Reaver.Definition, floor.Entry);
 
         // Seed FOV before the first paint so the initial frame already reflects
         // visibility instead of flashing as fully revealed.
@@ -78,14 +89,24 @@ public sealed class GameScreen : SadConsole.Console
         _entityManager = new SadEntityManager();
         SadComponents.Add(_entityManager);
 
+        _hitFeedback = new HitFeedback(_entityManager);
+
+        // Player events are hooked once for the lifetime of this GameScreen
+        // (RegenerateFloor reuses the same Player instance, so subscriptions
+        // survive death + respawn).
+        _player.Damaged += OnEntityDamaged;
+        _player.Died += OnEntityDied;
+
         _playerEntity = new SadEntity(_player.Color, Color.Black, _player.Glyph, zIndex: 100)
         {
             UsePixelPositioning = true,
         };
         _entityManager.Add(_playerEntity);
 
-        SpawnEnemy(Wolf.Definition, new Position(width / 2 + 6, height / 2 + 4));
-        SpawnEnemy(Wolf.Definition, new Position(width / 2 - 8, height / 2 - 3));
+        // Hardcoded to Wolf for v0; later: roll over Registries.Enemies.All
+        // filtered by ZoneIds.Contains(zone.Id) with RarityWeight.
+        foreach (var spawn in floor.EnemySpawnPoints)
+            SpawnEnemy(Wolf.Definition, spawn);
 
         // Apply the configured base font size (and resize window once to match).
         // No-op if UseSquareCells is false and we're already at native 8x16.
@@ -100,6 +121,8 @@ public sealed class GameScreen : SadConsole.Console
     private void SpawnEnemy(EnemyDefinition def, Position spawnTile)
     {
         var enemy = Enemy.Create(def, spawnTile);
+        enemy.Damaged += OnEntityDamaged;
+        enemy.Died += OnEntityDied;
         var visual = new SadEntity(enemy.Color, Color.Black, enemy.Glyph, zIndex: enemy.RenderLayer)
         {
             UsePixelPositioning = true,
@@ -107,6 +130,55 @@ public sealed class GameScreen : SadConsole.Console
         _entityManager.Add(visual);
         _enemies.Add(enemy);
         _enemyVisuals[enemy] = visual;
+    }
+
+    // Damage / death event handlers shared by both player and enemy entities.
+    // Routes to HitFeedback for the visual + hit-stop response.
+    private void OnEntityDamaged(Entity entity, int amount)
+    {
+        // Red on player so the "you got hit" cue is unmistakable; warm yellow
+        // on enemies for "you landed a swing" feedback.
+        var color = entity is Player
+            ? new Color(255, 90, 90)
+            : new Color(255, 230, 100);
+        _hitFeedback.OnDamaged(entity, amount, color);
+    }
+
+    private void OnEntityDied(Entity entity)
+    {
+        // Player death is handled by the regen flow — skip the kill burst
+        // since the floor swaps before the spray would render.
+        if (entity is Enemy)
+            _hitFeedback.OnDied(entity);
+    }
+
+    // Tear down current enemies, generate a fresh Wolfwood floor, reposition
+    // the player at full HP. Used on player death until real corpse-run /
+    // XP-loss death lands.
+    private void RegenerateFloor()
+    {
+        _hitFeedback.Clear();
+        foreach (var visual in _enemyVisuals.Values)
+            _entityManager.Remove(visual);
+        _enemies.Clear();
+        _enemyVisuals.Clear();
+        _combat.Clear();
+        _movement.Stop();
+
+        var zone = Registries.Zones.Get("wolfwood");
+        var seed = Environment.TickCount;
+        System.Console.WriteLine($"[Tarpg] Player died. Regenerating {zone.Name} (seed {seed})");
+        var floor = zone.Generator.Generate(_map.Width, _map.Height, seed);
+
+        _map = floor.Map;
+        _player.SetTile(floor.Entry);
+        _player.Health = _player.MaxHealth;
+
+        _map.ComputeFovFor(_player.Position, FovRadius);
+        _lastPlayerTile = _player.Position;
+
+        foreach (var spawn in floor.EnemySpawnPoints)
+            SpawnEnemy(Wolf.Definition, spawn);
     }
 
     public override void Update(TimeSpan delta)
@@ -117,41 +189,72 @@ public sealed class GameScreen : SadConsole.Console
         // the native (8x16, aspect=2) and square (16x16, aspect=1) modes.
         var cellAspect = (float)FontSize.Y / FontSize.X;
 
-        if (_combat.IsTargetAlive)
-        {
-            var target = _combat.Target!;
-            var distance = Vector2.Distance(_player.ContinuousPosition, target.ContinuousPosition);
+        // Hit-stop: when a swing connects, both player and enemy movement +
+        // attack ticks freeze for ~80ms so the impact reads. Cooldowns hold
+        // their value across the freeze; they resume from where they were.
+        var frozen = _hitFeedback.HitStopRemaining > 0f;
 
-            if (!_combat.ForceStand && distance > CombatController.MeleeRange)
+        if (!frozen)
+        {
+            if (_combat.IsTargetAlive)
             {
-                // Approach the target. Re-target every frame so the player
-                // tracks the enemy if it moves (it doesn't yet, but it will).
-                _movement.RetargetTo(target.ContinuousPosition, _player.ContinuousPosition, _map);
-                _movement.Tick(_player, _map, deltaSec, cellAspect);
+                var target = _combat.Target!;
+                var distance = Vector2.Distance(_player.ContinuousPosition, target.ContinuousPosition);
+
+                if (!_combat.ForceStand && distance > CombatController.MeleeRange)
+                {
+                    // Approach the target. Re-target every frame so the player
+                    // tracks the enemy if it moves.
+                    _movement.RetargetTo(target.ContinuousPosition, _player.ContinuousPosition, _map);
+                    _movement.Tick(_player, _map, deltaSec, cellAspect);
+                }
+                else
+                {
+                    // Either in range, or shift+click force-stand. Stop moving and try to swing.
+                    _movement.Stop();
+                    _combat.TryAttack(_player, deltaSec);
+                }
             }
             else
             {
-                // Either in range, or shift+click force-stand. Stop moving and try to swing.
-                _movement.Stop();
-                _combat.TryAttack(_player, deltaSec);
+                // No combat target — pure movement input.
+                _movement.Tick(_player, _map, deltaSec, cellAspect);
             }
-        }
-        else
-        {
-            // No combat target — pure movement input.
-            _movement.Tick(_player, _map, deltaSec, cellAspect);
         }
 
         ReapDead();
 
         // FOV only needs to recompute when the player crosses a tile boundary.
         // Position is the floor of ContinuousPosition, so equality checks here
-        // catch every tile transition without per-frame overhead.
+        // catch every tile transition without per-frame overhead. We do this
+        // BEFORE AI tick so each enemy queries the freshest FOV state.
         if (_player.Position != _lastPlayerTile)
         {
             _map.ComputeFovFor(_player.Position, FovRadius);
             _lastPlayerTile = _player.Position;
         }
+
+        // Each live enemy's AI decides chase / attack / idle for this frame.
+        // Skipped during hit-stop so attacks and chase pause on impact.
+        if (!frozen)
+        {
+            foreach (var enemy in _enemies)
+            {
+                if (enemy.IsDead) continue;
+                enemy.Ai.Tick(enemy, _player, _map, deltaSec, cellAspect);
+            }
+        }
+
+        // If the AIs collectively killed the player this frame, regenerate
+        // the floor and respawn at full HP. Real corpse-run / XP-loss death
+        // is deferred per docs/STATUS.md.
+        if (_player.IsDead)
+            RegenerateFloor();
+
+        // Effects always tick (so the hit-stop timer counts down even while
+        // we're "frozen", and damage numbers / kill-burst particles keep
+        // animating during the freeze for visual punch).
+        _hitFeedback.Tick(deltaSec, FontSize);
 
         DrawMap();
         SyncPlayerVisual();
@@ -279,6 +382,17 @@ public sealed class GameScreen : SadConsole.Console
         var pxY = (pos.Y - 0.5f) * FontSize.Y;
         visual.Position = new Point((int)MathF.Round(pxX), (int)MathF.Round(pxY));
 
+        // While flashing from a recent hit, override the glyph foreground.
+        // Reset to the entity's base color the moment the flash expires —
+        // which is just "every other frame", since flash state is checked
+        // per-tick.
+        var fg = _hitFeedback.IsFlashing(entity) ? _hitFeedback.FlashTint : entity.Color;
+        if (visual.AppearanceSingle is { } appearance && appearance.Appearance.Foreground != fg)
+        {
+            appearance.Appearance.Foreground = fg;
+            visual.IsDirty = true;
+        }
+
         // Hide entity sprites whose tile isn't currently visible. Player tile
         // is always in FOV by construction, so this collapses to true for the
         // player visual and only affects enemies.
@@ -325,34 +439,4 @@ public sealed class GameScreen : SadConsole.Console
 
     private static Color Dim(Color c, float factor) =>
         new Color((byte)(c.R * factor), (byte)(c.G * factor), (byte)(c.B * factor), c.A);
-
-    // Scaffold map: bordered room with a few interior walls and a threshold tile.
-    // Will be replaced by zone generators (BSP + cellular automata) when they land.
-    private static Map BuildScaffoldMap(int width, int height)
-    {
-        var map = new Map(width, height, TileTypes.Floor);
-
-        for (var x = 0; x < width; x++)
-        {
-            map.SetTile(new Position(x, 0), TileTypes.Wall);
-            map.SetTile(new Position(x, height - 1), TileTypes.Wall);
-        }
-        for (var y = 0; y < height; y++)
-        {
-            map.SetTile(new Position(0, y), TileTypes.Wall);
-            map.SetTile(new Position(width - 1, y), TileTypes.Wall);
-        }
-
-        for (var x = 10; x < 22; x++)
-            map.SetTile(new Position(x, 8), TileTypes.Wall);
-        for (var y = 8; y < 16; y++)
-            map.SetTile(new Position(22, y), TileTypes.Wall);
-        map.SetTile(new Position(16, 8), TileTypes.Door);
-
-        var thresholdX = Math.Max(1, width - 5);
-        var thresholdY = Math.Max(1, height / 2);
-        map.SetTile(new Position(thresholdX, thresholdY), TileTypes.Threshold);
-
-        return map;
-    }
 }
