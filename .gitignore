@@ -1,0 +1,86 @@
+## .NET build artifacts
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+
+## Visual Studio / Rider / VS Code
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+*.userprefs
+*.sln.docstates
+*.userosscache
+
+## Build results
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+ARM/
+ARM64/
+bld/
+[Bb]uilds/
+
+## Test results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.coverage
+*.coveragexml
+
+## NuGet
+*.nupkg
+*.snupkg
+.nuget/
+**/packages/*
+!**/packages/build/
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+## Rider
+*.DotSettings.user
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+## SadConsole / MonoGame content cache
+Content/bin/
+Content/obj/
+*.xnb
+
+## Local-only preprocessing source for the bundled square font.
+## The build asset lives at src/Tarpg/Content/font_12x12.png; this root copy
+## is the un-preprocessed Milazzo source kept around for re-runs of the
+## magenta-to-transparent step. Remove this line if you want to commit it.
+/font_12x12.png
+
+## Secrets / local config (defensive — none in repo today, but keep them out)
+.env
+.env.*
+*.pfx
+*.snk
+appsettings.Local.json
+appsettings.*.Local.json
+
+## Crash dumps / profiler output
+*.dmp
+*.dmp.gz
+*.mdmp
+*.diagsession
+
+## OS-specific files (extra)
+$RECYCLE.BIN/
+.AppleDouble
+.LSOverride
+
+## Editor scratch files
+*.swp
+*.swo
+*~
+.history/

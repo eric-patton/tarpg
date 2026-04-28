@@ -1,0 +1,11 @@
+{
+    "$type": "SadConsole.SadFont, SadConsole",
+    "Columns": 16,
+    "GlyphHeight": 12,
+    "GlyphWidth": 12,
+    "GlyphPadding": 0,
+    "Name": "font_12x12",
+    "FilePath": "font_12x12.png",
+    "IsSadExtended": false,
+    "SolidGlyphIndex": 219
+}
