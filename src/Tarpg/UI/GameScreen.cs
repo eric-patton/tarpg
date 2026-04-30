@@ -234,14 +234,11 @@ public sealed class GameScreen : SadConsole.Console
         var floor = _zone.Generator.Generate(WorldWidth, WorldHeight, seed, _currentFloor);
 
         _map = floor.Map;
-        _player = Player.Create(Reaver.Definition, floor.Entry);
+        var classDef = Registries.Classes.Get(RenderSettings.StartingClassId);
+        _player = Player.Create(classDef, floor.Entry);
 
         _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat, _floorItems);
-        _loop.SetSlotSkill(SlotIndexM2, Registries.Skills.Get("heavy_strike"));
-        _loop.SetSlotSkill(SlotIndexQ,  Registries.Skills.Get("cleave"));
-        _loop.SetSlotSkill(SlotIndexW,  Registries.Skills.Get("charge"));
-        _loop.SetSlotSkill(SlotIndexE,  Registries.Skills.Get("war_cry"));
-        _loop.SetSlotSkill(SlotIndexR,  Registries.Skills.Get("whirlwind"));
+        WireSlotSkills(_loop, classDef);
 
         _map.ComputeFovFor(_player.Position, GameLoopController.FovRadius);
         _lastPlayerTile = _player.Position;
@@ -346,6 +343,19 @@ public sealed class GameScreen : SadConsole.Console
         _entityManager.Add(visual);
         _enemies.Add(enemy);
         _enemyVisuals[enemy] = visual;
+    }
+
+    // Apply the class's StartingSlotSkills to each slot. Empty (null) slots
+    // stay empty. Shared with TickRunner (which has its own copy because
+    // the sim doesn't pull GameScreen as a dependency).
+    private static void WireSlotSkills(GameLoopController loop, Tarpg.Classes.WalkerClassDefinition classDef)
+    {
+        for (var i = 0; i < classDef.StartingSlotSkills.Count; i++)
+        {
+            var skillId = classDef.StartingSlotSkills[i];
+            if (skillId is null) continue;
+            loop.SetSlotSkill(i, Registries.Skills.Get(skillId));
+        }
     }
 
     // Slot activation: delegates to the loop controller for the

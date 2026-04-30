@@ -1,7 +1,7 @@
 # TARPG — Master Status
 
 > **Updated**: 2026-04-30
-> **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); one playable class (Reaver) with full 5-slot kit (M2/Q/W/E/R) and skill VFX; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack melee combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite and a `tarpg-sim` CLI that sweeps (floor × seed) grids for balance tuning.
+> **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); two playable classes (Reaver melee + Hunter ranged), each with a full 5-slot kit (M2/Q/W/E/R) wired via `WalkerClassDefinition.StartingSlotSkills`; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite (skills, AIs, BSP, Items, Movement, Combat, slot-wiring) and a `tarpg-sim` CLI that sweeps (floor × seed × class) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
 
@@ -136,6 +136,12 @@ When you `run`, you get:
 | `Charge.CooldownSec` / `Cost` / `Damage` / `MaxDistanceTiles` | `5.0f` / `15` Rage / `15` / `6` | `Skills/Charge.cs` |
 | `WarCry.CooldownSec` / `Cost` / `HealAmount` | `12.0f` / `25` Rage / `25` HP | `Skills/WarCry.cs` |
 | `Whirlwind.CooldownSec` / `Cost` / `Damage` / `Radius` | `6.0f` / `30` Rage / `15` / `2` (chebyshev) | `Skills/Whirlwind.cs` |
+| `QuickShot.CooldownSec` / `Cost` / `Damage` / `MaxRange` | `0.5f` / `0` / `12` / `6` (LOS-gated hitscan) | `Skills/QuickShot.cs` |
+| `Volley.CooldownSec` / `Cost` / `Damage` / `MaxRange` / `Radius` | `1.0f` / `12` Focus / `8` / `6` / `1` (3×3 at cursor, LOS-gated) | `Skills/Volley.cs` |
+| `Roll.CooldownSec` / `Cost` / `MaxDistanceTiles` | `4.0f` / `10` Focus / `4` (away from cursor) | `Skills/Roll.cs` |
+| `Bandage.CooldownSec` / `Cost` / `HealAmount` | `12.0f` / `25` Focus / `25` HP | `Skills/Bandage.cs` |
+| `RainOfArrows.CooldownSec` / `Cost` / `Damage` / `MaxRange` / `Radius` | `8.0f` / `35` Focus / `18` / `8` / `2` (5×5 at cursor, no LOS check) | `Skills/RainOfArrows.cs` |
+| `RenderSettings.StartingClassId` | `"reaver"` (resolved against `Registries.Classes` at game start) | `Core/RenderSettings.cs` |
 | `GameScreen.DashTilesPerSec` | `30f` (lerp speed for skill-induced teleports) | `UI/GameScreen.cs` |
 | `SkillVfx.HighlightMaxTint` | `0.7f` (peak bg-color blend for area highlights) | `UI/Effects/SkillVfx.cs` |
 | `SkillVfx.FlashPeakAlpha` | `160` (peak screen-flash alpha out of 255) | same |
@@ -162,6 +168,16 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Hunter — second playable class with full Focus kit
+- **`Skills/QuickShot.cs`** (new, M2) — hitscan single-target shot. Range-gated to chebyshev 6 from caster + LOS-gated via `TileLineOfSight` so an arrow into a wall does no damage. Picks the nearest enemy within `TargetRadius=1` of the cursor cell so a near-miss click still connects. 12 dmg, 0 cost, 0.5s cd, glyph `'`.
+- **`Skills/Volley.cs`** (new, Q) — 3×3 chebyshev-1 AOE at the cursor. Range 6, LOS-gated from caster to cursor (the volley as a whole; individual splash hits don't re-check LOS per target). 8 dmg per hit, 12 Focus, 1.0s cd, glyph `"`.
+- **`Skills/Roll.cs`** (new, W) — disengage-dash mirroring Charge. Walks one tile at a time AWAY from the cursor up to 4 tiles; stops at the first wall, lands on the last walkable tile. Cursor-on-caster falls back to east. 0 dmg, 10 Focus, 4.0s cd, glyph `~`. Returns `Teleported = true` to `TryCastSkill` so GameScreen plays the dash visual lerp.
+- **`Skills/Bandage.cs`** (new, E) — instant heal mirroring War Cry mechanically; cream/linen flash differentiates from War Cry's green. 25 HP, 25 Focus, 12.0s cd, glyph `+`.
+- **`Skills/RainOfArrows.cs`** (new, R) — 5×5 chebyshev-2 AOE at the cursor. Range 8, **no LOS check** (arrows arc); the higher cost / longer cooldown is what gates the wall-skip. 18 dmg per hit, 35 Focus, 8.0s cd, glyph `:`.
+- **`Classes/WalkerClassDefinition.cs`** — added `IReadOnlyList<string?> StartingSlotSkills` (length = `GameLoopController.SlotCount`). Each entry is a skill id resolvable against `Registries.Skills`, or null for an empty slot. Reaver / Hunter populated; Cipher / Speaker still all-null.
+- **`UI/GameScreen.cs` + `Sim/TickRunner.cs`** — drop the per-class slot-wiring branches in favor of a generic loop reading `classDef.StartingSlotSkills`. Resolves the "hardcoded twice" item from prior open issues. GameScreen now reads `RenderSettings.StartingClassId` (defaults `"reaver"`) for the live-game class selection — flip to `"hunter"` and recompile to play Hunter; class-select UI is still deferred.
+- **Tests** — `Skills/{QuickShot,Volley,Roll,Bandage,RainOfArrows}Tests.cs` cover damage / range / LOS / radius / on-top-of-caster fallbacks. `Classes/StartingSlotSkillsTests.cs` pins kit length, all-non-null-ids-resolve, and Hunter-kit-uses-Focus. Per the new CLAUDE.md tests-with-features rule.
 
 ### Health & Resource potions — drop, pickup, drink, HUD
 - **`Items/Potions.cs`** (new) — two `ItemDefinition`s (`health_potion`, `resource_potion`, both `ItemSlot.None` glyph `!`) plus the per-potion tunables: `HealthPotionHealAmount = 40`, `ResourcePotionRestoreAmount = 30`, `DrinkCooldownSec = 0.5f`. Heal / restore amounts and glyph colors live here instead of growing `ItemDefinition` for every new consumable shape — when more variants land we promote them to a `ConsumableData` record.
@@ -386,23 +402,23 @@ When you `run`, you get:
 
 ## Up next (immediate work queue)
 
-### 1. Second playable class
-**Goal**: the Reaver kit is in but tuned by gut. Before a real balance pass we need a second class with its own resource (Focus / Insight / Echo) and skill kit so the pass can compare across kits instead of just adjusting Reaver in isolation. Hunter (Focus) is the natural pick — it'll exercise the ranged / kiter side of combat that the Reaver largely sidesteps.
+### 1. Skill / class balance pass
+**Goal**: both kits (Reaver, Hunter) are in but tuned by gut. With two classes online we can compare across kits instead of adjusting in isolation. Drive `tarpg-sim --floors 1-15 --seeds 100` for both classes, compare per-floor cleared% / HpEnd / kill-time distributions, adjust constants, re-run until each skill has a clear identity (M2 = small/free, Q = primary, W = engage, E = bail-out, R = nuke) AND each class has a recognizable signature (Reaver = "win the melee," Hunter = "control the distance").
 
-**Approach**: 5 skills along the same `M2 / Q / W / E / R` template (small swing, primary, engage, bail-out, nuke), with VFX hooks via the existing `ISkillVfx` primitives. Add a `WalkerClassDefinition.GetDefaultSlotSkills()`-style accessor (or a registry-side lookup) so `GameScreen` and `TickRunner` don't both hardcode the slot wiring per class.
+**Approach**: open `tarpg-sim` outputs side-by-side for both classes; tune `Skills/*.cs` numbers (and possibly enemy HP / damage scaling on the same axis). Likely also factor weapon damage out of skills into a `PlayerStats.cs` so weapon drops can scale skill damage uniformly without per-skill edits.
 
-**Files to touch**: 5 new `Skills/<HunterSkill>.cs`, possibly extend `WalkerClassDefinition`, light edits in `GameScreen.cs` + `Sim/TickRunner.cs` for the slot-wiring lookup. Add a Hunter sweep to `tarpg-sim` smoke output.
+**Files to touch**: each `Skills/*.cs` (numbers), `Enemies/*.cs` if scaling shifts, possibly new `Entities/PlayerStats.cs`.
 
-**Estimated effort**: 1–2 sessions for the kit; plumbing changes are small.
+**Estimated effort**: 1 focused tuning session per class plus the weapon / level scaling abstraction (~half a session) if we go that route.
 
-### 2. Skill / class balance pass (deferred until #1 lands)
-**Goal**: 5 Reaver skills are in but were tuned by gut not by play data. Cleave-vs-auto-attack note is the canary; once a second class lands, sit down with `tarpg-sim` outputs and tune Damage / Cost / Cooldown across both kits so each skill has a clear identity (M2 = small/free, Q = horde clear, W = engage, E = bail-out, R = nuke) AND each class has a recognizable signature.
+### 2. Live class-select UI
+**Goal**: today, switching classes requires editing `RenderSettings.StartingClassId` and recompiling. Add a class-select screen at game start (or a debug F1/F2/F3/F4 cycle) so balance-tuning playthroughs aren't gated on a build-edit-relaunch loop. Cipher and Speaker stubs are still empty kits — class-select also surfaces "you can't pick these yet" naturally.
 
-**Approach**: drive `tarpg-sim --floors 1-15 --seeds 100` for both classes, compare per-floor cleared% / HpEnd / kill-time distributions, adjust constants in each `Skills/*.cs`, re-run. Probably also factor weapon damage out of skills into a `PlayerStats.cs` so weapon drops can scale skill damage uniformly.
+**Approach**: simple SadConsole screen rendered before the GameScreen; arrow-keys to highlight, enter to confirm. Skip when only one class has a non-empty `StartingSlotSkills` (single-option = no menu).
 
-**Files to touch**: each `Skills/*.cs` (numbers), enemy stat files, possibly new `PlayerStats.cs`.
+**Files to touch**: new `UI/ClassSelectScreen.cs`, `Program.cs` to chain screens, `RenderSettings.StartingClassId` becomes a default-only constant.
 
-**Estimated effort**: 1 focused tuning session per class once both kits are in, plus the weapon / level scaling abstraction (~half a session) if we go that route.
+**Estimated effort**: 1 session.
 
 ### 3. Real corpse-run death
 **Goal**: replace "regen on death, same floor, full HP" with corpse drop + XP loss + return-to-town. Town doesn't exist yet so this couples to the town milestone — but the death loop itself can land first as "die → reset to F1 with carried inventory minus a dropped item."
@@ -418,8 +434,8 @@ When you `run`, you get:
 ## Roadmap (ordered, but not strict)
 
 ### Soon — next 3–5 sessions
-- [ ] Second playable class (above)
-- [ ] Skill / class balance pass (above) — deferred until #1
+- [ ] Skill / class balance pass (above)
+- [ ] Live class-select UI (above)
 - [ ] Real corpse-run death (above)
 - [ ] **Cellular automata roughening for Wolfwood floor edges** + flood-fill connectivity repair.
 - [ ] **Distinct boss-anchor tile**: today the Threshold doubles as boss-spawn marker; once descent meets boss arenas they can't be the same.
@@ -482,8 +498,8 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **No projectile entities for ranged attacks yet** — the howler's hitscan damage gives no spatial cue for the attack itself; the player only knows damage happened from the HitFeedback flash + number. A short glyph trail along the LOS line (or a real projectile entity that travels) is the natural follow-up.
 - **Stat scaling is single-zone, single-curve** — `HpScalePerFloor` / `DmgScalePerFloor` are global. Different zones (Drowned Hall, Hollow Court, etc.) will likely want their own curves, and "elite" enemies probably shouldn't scale linearly the same way commons do.
 - **Pack spawn doesn't preserve formation across regen** — a pup pack that was a tight 3-cluster at spawn time can scatter as the AIs chase the player. Future "alpha + pack" mechanics may want the pack to stick together.
-- **Class slot wiring is hardcoded twice** — `GameScreen` constructor and `TickRunner.WireDefaultSkills` both do `loop.SetSlotSkill(M2, "heavy_strike")` etc for the Reaver. When the second class lands, lift this into `WalkerClassDefinition.GetDefaultSlotSkills()` (or similar registry-side accessor) so adding a kit doesn't require editing two files.
-- **GreedySimPilot is pressure-testing, not optimal play** — it doesn't kite, doesn't skip enemies that aren't worth the HP cost, doesn't manage Rage strategically. CSV outputs are useful as relative comparisons (this skill kit vs that one, Reaver vs Hunter) but absolute "win rate" numbers will undershoot what a competent player achieves.
+- **GreedySimPilot is pressure-testing, not optimal play** — it doesn't kite, doesn't skip enemies that aren't worth the HP cost, doesn't manage resource strategically. CSV outputs are useful as relative comparisons (this skill kit vs that one, Reaver vs Hunter) but absolute "win rate" numbers will undershoot what a competent player achieves. Worth landing a Hunter-flavored pilot variant (`KitingSimPilot` — keep distance, fire ranged) so Hunter-vs-Reaver sweeps test the kit, not the pilot's mismatch with the kit.
+- **Class can't be switched in-game** — `RenderSettings.StartingClassId` is the only knob; flipping it requires a recompile. The class-select UI is item #2 in Up next.
 - **Cleave-vs-auto-attack feels off at low enemy counts** — 10 dmg × N adjacent enemies on a 1.0s cooldown for 10 Rage vs the auto-attack's 10 dmg single-target on 0.8s for free. Math wins for Cleave only at 3+ adjacent enemies, and even there it doesn't *feel* like a payoff. Holding for the deferred balance pass — once a second class lands, drive `tarpg-sim` numbers to retune the whole kit holistically.
 - **Threshold tile is the descent trigger AND the BSP boss-anchor marker** — these will conflict the moment boss arenas land (you'd descend onto the boss tile instead of fighting). Need a distinct boss-spawn tile (or a sidecar marker layer on Map) before the Wolf-Mother arena.
 - **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
@@ -554,7 +570,9 @@ src/Tarpg/
   Inventory/
     Inventory.cs                      first-cut consumables-only — HP / Resource potion counts
   Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker, Potions, LootDropper
-  Skills/                             Definition, ISkillBehavior, ISkillVfx, Cleave, HeavyStrike, Charge, WarCry, Whirlwind
+  Skills/                             Definition, ISkillBehavior, ISkillVfx
+                                      Reaver:  Cleave, HeavyStrike, Charge, WarCry, Whirlwind
+                                      Hunter:  QuickShot, Volley, Roll, Bandage, RainOfArrows
   Classes/                            WalkerClassDefinition, Reaver/Hunter/Cipher/Speaker
   Bosses/                             BossDefinition, WolfMother stub
   Modifiers/                          ModifierDefinition, IModifierBehavior, BurningFloor
@@ -573,6 +591,8 @@ src/Tarpg.Tests/                      xUnit project (21+ tests across Movement /
   Combat/CombatControllerTests.cs
   Enemies/Ai/MeleeChargerAiTests.cs   Enemies/Ai/RangedKiterAiTests.cs
   Items/InventoryTests.cs             Items/PotionPickupTests.cs   Items/LootDropperTests.cs
+  Skills/{QuickShot,Volley,Roll,Bandage,RainOfArrows}Tests.cs   Hunter kit coverage
+  Classes/StartingSlotSkillsTests.cs  per-class kit length / id-resolution / resource-type coverage
   Sim/WolfwoodBalanceTests.cs         smoke tests for the harness — fixed seeds, weak invariants
   World/Generation/BspGeneratorTests.cs
 

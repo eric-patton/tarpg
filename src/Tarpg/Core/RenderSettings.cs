@@ -30,4 +30,10 @@ public static class RenderSettings
     // brings floor to (40,40,40) and walls to (80,70,55), which reads as a
     // distinct dimmed-but-visible memory layer.
     public static readonly float UnseenDimFactor = 0.5f;
+
+    // Class id the player starts with on a fresh game. Resolved against
+    // Registries.Classes by GameScreen at startup. Live class-select UI
+    // is deferred — for now flip this constant and recompile to play a
+    // different class. Sim runners override via the --class CLI arg.
+    public static readonly string StartingClassId = "reaver";
 }

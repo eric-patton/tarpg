@@ -129,19 +129,16 @@ public static class TickRunner
         };
     }
 
-    // Default skill kit for each class. Mirrors GameScreen's slot wiring.
-    // Lifted here so sim doesn't depend on UI / GameScreen directly. When
-    // class definitions grow a "default skills" field this collapses to
-    // a registry read.
+    // Apply the class's StartingSlotSkills to each slot. Same loop as
+    // GameScreen.WireSlotSkills — the two stay in sync because both read
+    // from the same WalkerClassDefinition.StartingSlotSkills source of truth.
     private static void WireDefaultSkills(GameLoopController loop, Tarpg.Classes.WalkerClassDefinition classDef)
     {
-        if (classDef.Id == "reaver")
+        for (var i = 0; i < classDef.StartingSlotSkills.Count; i++)
         {
-            loop.SetSlotSkill(GameLoopController.SlotIndexM2, Registries.Skills.Get("heavy_strike"));
-            loop.SetSlotSkill(GameLoopController.SlotIndexQ,  Registries.Skills.Get("cleave"));
-            loop.SetSlotSkill(GameLoopController.SlotIndexW,  Registries.Skills.Get("charge"));
-            loop.SetSlotSkill(GameLoopController.SlotIndexE,  Registries.Skills.Get("war_cry"));
-            loop.SetSlotSkill(GameLoopController.SlotIndexR,  Registries.Skills.Get("whirlwind"));
+            var skillId = classDef.StartingSlotSkills[i];
+            if (skillId is null) continue;
+            loop.SetSlotSkill(i, Registries.Skills.Get(skillId));
         }
     }
 

@@ -13,7 +13,16 @@ public static class Hunter
         Description = "Ranged tracker. Bows, traps, mobility, regenerating Focus.",
         GlyphColor = new Color(80, 200, 110),
         Resource = ResourceType.Focus,
-        StartingSkillIds = Array.Empty<string>(),
+        StartingSkillIds = new[] { "quick_shot" },
+        // M2 / Q / W / E / R — kept in lockstep with GameLoopController slot indices.
+        StartingSlotSkills = new string?[]
+        {
+            "quick_shot",
+            "volley",
+            "roll",
+            "bandage",
+            "rain_of_arrows",
+        },
         BaseHealth = 50,
         BaseResource = 100,
     };
