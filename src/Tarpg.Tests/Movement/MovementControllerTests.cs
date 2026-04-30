@@ -85,17 +85,21 @@ public class MovementControllerTests
     [Fact]
     public void Tick_WallSlides_DoesNotCrossSolidTile()
     {
-        // Wall at x=8 spans the row the player walks along. RetargetTo into
-        // the wall — A* will fail (no walkable neighbor), the controller
-        // falls through to "drift toward the cursor" mode, and the
-        // wall-slide collision should clamp X just before the wall.
-        var map = TestMaps.OpenFloorWithWalls(20, 20, new Position(8, 5));
+        // Wall column at x=8 from y=1..18 with no gap. RetargetTo (10.5, 5.5)
+        // — A* finds no path (column blocks every row), so RetargetTo leaves
+        // _finalTarget set without waypoints and movement drifts straight at
+        // the cursor. Wall-slide collision should clamp X just before the
+        // wall regardless of how many ticks we run.
+        var walls = new List<Position>();
+        for (var y = 1; y < 19; y++)
+            walls.Add(new Position(8, y));
+        var map = TestMaps.OpenFloorWithWalls(20, 20, walls.ToArray());
         var player = Player.Create(Reaver.Definition, new Position(5, 5));
         var movement = new MovementController();
 
-        movement.RetargetTo(new Vector2(8.5f, 5.5f), player.ContinuousPosition, map);
+        movement.RetargetTo(new Vector2(10.5f, 5.5f), player.ContinuousPosition, map);
 
-        for (var i = 0; i < 200 && movement.HasGoal; i++)
+        for (var i = 0; i < 200; i++)
             movement.Tick(player, map, 0.05f, 1.0f);
 
         // X should never have entered the wall tile (8 ≤ x < 9).

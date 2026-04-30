@@ -71,18 +71,17 @@ public class CombatControllerTests
         var combat = new CombatController();
         combat.SetTarget(target);
 
-        combat.TryAttack(attacker, 0.05f); // first swing — sets cooldown
-        // Burn off the cooldown a tick at a time so each call exercises
-        // the same TryAttack path. Total elapsed > AutoAttackCooldownSec.
-        for (var i = 0; i < 20; i++)
-            combat.TryAttack(attacker, 0.05f);
+        // Run for 2 sim-seconds (40 ticks at 0.05s). At 0.8s/swing we
+        // expect 2-3 hits. Don't try to time the exact swing tick — the
+        // cooldown drain happens inside TryAttack itself, so the swing
+        // fires during a cooldown-decrement call rather than after one.
+        var hits = 0;
+        for (var i = 0; i < 40; i++)
+            if (combat.TryAttack(attacker, 0.05f)) hits++;
 
-        // Second swing fires now.
-        var hpBefore = target.Health;
-        var hit = combat.TryAttack(attacker, 0.05f);
-
-        Assert.True(hit);
-        Assert.Equal(hpBefore - CombatController.BaseDamage, target.Health);
+        Assert.True(hits >= 2,
+            $"Expected ≥2 swings in 2 sim-seconds at 0.8s cd; got {hits}.");
+        Assert.Equal(1000 - hits * CombatController.BaseDamage, target.Health);
     }
 
     [Fact]

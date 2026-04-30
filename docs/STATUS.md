@@ -576,7 +576,7 @@ src/Tarpg.Tests/                      xUnit project (21+ tests across Movement /
   Sim/WolfwoodBalanceTests.cs         smoke tests for the harness — fixed seeds, weak invariants
   World/Generation/BspGeneratorTests.cs
 
-tarpg.sln, global.json, .gitignore, run.bat, test.bat, sim.bat
+tarpg.sln, global.json, .gitignore, run.bat, test.bat, sim.bat, simi.bat (interactive sim wrapper)
 ```
 
 ---

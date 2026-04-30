@@ -24,6 +24,7 @@ public static class Program
         try
         {
             var opts = ParseArgs(args);
+            if (opts.Interactive) opts = PromptInteractive(opts);
             return RunSweep(opts);
         }
         catch (ArgException ex)
@@ -32,6 +33,58 @@ public static class Program
             Console.Error.WriteLine();
             Console.Error.WriteLine(Usage);
             return 2;
+        }
+    }
+
+    // Interactive prompt: walks through each option in order, showing the
+    // current default in brackets. Empty input keeps the default; values
+    // that fail to parse re-prompt the same field. Combine with explicit
+    // CLI args (e.g. `--interactive --seeds 100`) to pre-seed defaults.
+    private static Options PromptInteractive(Options seed)
+    {
+        Console.WriteLine("TARPG sim — interactive");
+        Console.WriteLine("(blank = keep default in brackets)");
+        Console.WriteLine();
+
+        var opts = new Options
+        {
+            Interactive = false,
+            ZoneId = PromptString("Zone", seed.ZoneId),
+            ClassId = PromptString("Class", seed.ClassId),
+        };
+        var floorRange = PromptString("Floors range (e.g. 1-15 or 5)", $"{seed.FloorMin}-{seed.FloorMax}");
+        ParseFloorRange(floorRange, out opts.FloorMin, out opts.FloorMax);
+        opts.SeedCount = PromptInt("Seeds per floor", seed.SeedCount);
+        opts.SeedBase = PromptInt("Seed base", seed.SeedBase);
+        opts.PilotId = PromptString("Pilot (greedy)", seed.PilotId);
+        var outPath = PromptString("CSV output path (blank = skip)", seed.OutPath ?? "");
+        opts.OutPath = string.IsNullOrWhiteSpace(outPath) ? null : outPath;
+
+        Console.WriteLine();
+        return opts;
+    }
+
+    private static string PromptString(string label, string @default)
+    {
+        while (true)
+        {
+            Console.Write($"  {label} [{@default}]: ");
+            var line = Console.ReadLine();
+            if (string.IsNullOrWhiteSpace(line)) return @default;
+            return line.Trim();
+        }
+    }
+
+    private static int PromptInt(string label, int @default)
+    {
+        while (true)
+        {
+            Console.Write($"  {label} [{@default}]: ");
+            var line = Console.ReadLine();
+            if (string.IsNullOrWhiteSpace(line)) return @default;
+            if (int.TryParse(line.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+                return n;
+            Console.WriteLine($"  (not an integer — try again)");
         }
     }
 
@@ -211,6 +264,10 @@ public static class Program
                 case "--out":
                     opts.OutPath = RequireValue(args, ref i);
                     break;
+                case "-i":
+                case "--interactive":
+                    opts.Interactive = true;
+                    break;
                 case "-h":
                 case "--help":
                     Console.WriteLine(Usage);
@@ -252,6 +309,8 @@ public static class Program
           --seed-base <n>      First seed; subsequent seeds are seed-base + i (default: 1000)
           --pilot <id>         Pilot strategy: greedy (default: greedy)
           --out <path>         CSV output path (omit to skip CSV; aggregates still print)
+          -i, --interactive    Prompt for each option (defaults shown in brackets); combine
+                               with explicit args to pre-seed answers (e.g. -i --seeds 100)
           -h, --help           Show this message
         """;
 
@@ -265,6 +324,7 @@ public static class Program
         public int SeedBase = 1000;
         public string PilotId = "greedy";
         public string? OutPath;
+        public bool Interactive;
     }
 
     private sealed class ArgException(string message) : Exception(message);
