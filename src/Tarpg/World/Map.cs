@@ -15,6 +15,12 @@ public sealed class Map
     private readonly bool[,] _visible;
     private readonly bool[,] _explored;
 
+    // Cached PathFinder. Constructing one is expensive (builds an
+    // EdgeWeightedDigraph from every walkable cell) and the map is immutable
+    // for the lifetime of the floor in normal play, so we keep one around
+    // and only invalidate when SetTile flips a walkability bit.
+    private RogueSharp.PathFinder? _cachedPathFinder;
+
     public int Width { get; }
     public int Height { get; }
 
@@ -48,6 +54,11 @@ public sealed class Map
     {
         _tiles[p.X, p.Y].Type = type;
         _rogueMap.SetCellProperties(p.X, p.Y, type.IsTransparent, type.IsWalkable);
+        // Walkability may have changed; force the PathFinder graph to rebuild
+        // on next FindPath. In practice SetTile is only called during BSP
+        // generation, so this happens a couple of hundred times during floor
+        // build and zero times during play.
+        _cachedPathFinder = null;
     }
 
     public bool IsWalkable(Position p) => InBounds(p) && _tiles[p.X, p.Y].Type.IsWalkable;
@@ -100,7 +111,7 @@ public sealed class Map
         if (!InBounds(start) || !InBounds(end)) return null;
         if (!IsWalkable(end)) return null;
 
-        var pathFinder = new PathFinder(_rogueMap);
+        var pathFinder = _cachedPathFinder ??= new PathFinder(_rogueMap);
         var startCell = _rogueMap.GetCell(start.X, start.Y);
         var endCell = _rogueMap.GetCell(end.X, end.Y);
 

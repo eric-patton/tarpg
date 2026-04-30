@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using Tarpg.Core;
@@ -57,6 +59,7 @@ public static class Program
         opts.SeedCount = PromptInt("Seeds per floor", seed.SeedCount);
         opts.SeedBase = PromptInt("Seed base", seed.SeedBase);
         opts.PilotId = PromptString("Pilot (greedy)", seed.PilotId);
+        opts.Parallel = PromptInt("Parallel workers (1 = serial)", seed.Parallel ?? Environment.ProcessorCount);
         var outPath = PromptString("CSV output path (blank = skip)", seed.OutPath ?? "");
         opts.OutPath = string.IsNullOrWhiteSpace(outPath) ? null : outPath;
 
@@ -92,67 +95,143 @@ public static class Program
     {
         // Touch a registry to force ContentInitializer to run (TickRunner
         // also does this internally, but we need definitions resolvable
-        // before we start logging totals).
+        // before we start logging totals AND before parallel workers start
+        // racing into Initialize concurrently — the inner lock is fine,
+        // but doing it once up front keeps the hot path lock-free).
         ContentInitializer.Initialize();
 
         var classDef = Registries.Classes.Get(opts.ClassId);
         var playerMaxHp = classDef.BaseHealth;
 
-        var allResults = new List<RunRecord>();
-        var startedAt = DateTime.UtcNow;
         var totalRuns = (opts.FloorMax - opts.FloorMin + 1) * opts.SeedCount;
+        var degree = Math.Max(1, opts.Parallel ?? Environment.ProcessorCount);
+        var startedAt = DateTime.UtcNow;
 
         Console.WriteLine($"# tarpg-sim: zone={opts.ZoneId} class={opts.ClassId} pilot={opts.PilotId} " +
                           $"floors={opts.FloorMin}-{opts.FloorMax} seeds={opts.SeedCount}");
-        Console.WriteLine($"# total runs: {totalRuns}");
+        Console.WriteLine($"# total runs: {totalRuns} (parallel: {degree})");
 
+        // Build the full (floor, seed) work list up front so Parallel.ForEach
+        // can dispatch them in any order without coupling to nested loops.
+        var workItems = new List<WorkItem>(totalRuns);
         for (var floor = opts.FloorMin; floor <= opts.FloorMax; floor++)
-        {
-            var floorRows = new List<RunRecord>();
-            var floorStartedAt = DateTime.UtcNow;
-
             for (var seedIdx = 0; seedIdx < opts.SeedCount; seedIdx++)
+                workItems.Add(new WorkItem(floor, opts.SeedBase + seedIdx));
+
+        // Per-floor accumulators. Each worker, after finishing its run, calls
+        // Add() on the right floor's state — when the last run for that floor
+        // lands, Add() returns true and we emit the floor banner. Without
+        // this we'd have no per-floor progress output at all (Parallel finishes
+        // floors in random order; the old "print after the inner loop ends"
+        // pattern doesn't apply anymore).
+        var floorState = new ConcurrentDictionary<int, FloorAggregator>();
+        for (var f = opts.FloorMin; f <= opts.FloorMax; f++)
+            floorState[f] = new FloorAggregator(opts.SeedCount, DateTime.UtcNow);
+
+        var results = new ConcurrentBag<RunRecord>();
+        var completed = 0;
+
+        // Console.WriteLine is line-atomic in .NET, but pairing the run line
+        // with the (sometimes-following) floor summary needs a single critical
+        // section so they don't get interleaved with another thread's run line.
+        var consoleLock = new object();
+
+        Parallel.ForEach(workItems,
+            new ParallelOptions { MaxDegreeOfParallelism = degree },
+            item =>
             {
-                var seed = opts.SeedBase + seedIdx;
                 var cfg = new SimConfig
                 {
                     ZoneId = opts.ZoneId,
                     ClassId = opts.ClassId,
-                    Floor = floor,
-                    Seed = seed,
+                    Floor = item.Floor,
+                    Seed = item.Seed,
                 };
 
                 var pilot = MakePilot(opts.PilotId);
                 var result = global::Tarpg.Sim.TickRunner.Run(cfg, pilot);
 
-                var record = new RunRecord(seed, floor, result);
-                allResults.Add(record);
-                floorRows.Add(record);
+                results.Add(new RunRecord(item.Seed, item.Floor, result));
+                var indexForLine = Interlocked.Increment(ref completed) - 1;
 
-                Console.WriteLine(SimProgress.FormatRunLine(
-                    index: allResults.Count - 1,
-                    total: totalRuns,
-                    floor: floor, seed: seed,
-                    result: result, playerMaxHp: playerMaxHp));
-            }
+                var floorAgg = floorState[item.Floor];
+                var floorDone = floorAgg.Add(result);
 
-            var floorElapsed = (DateTime.UtcNow - floorStartedAt).TotalSeconds;
-            var cleared = floorRows.Count(r => r.Result.Outcome == SimOutcome.PlayerCleared);
-            var died    = floorRows.Count(r => r.Result.Outcome == SimOutcome.PlayerDied);
-            var timeout = floorRows.Count(r => r.Result.Outcome == SimOutcome.Timeout);
-            var killsAvg = floorRows.Average(r => (double)r.Result.EnemiesKilled);
-            Console.WriteLine(SimProgress.FormatFloorSummary(
-                floor, floorRows.Count, cleared, died, timeout, killsAvg, floorElapsed));
-        }
+                lock (consoleLock)
+                {
+                    Console.WriteLine(SimProgress.FormatRunLine(
+                        index: indexForLine,
+                        total: totalRuns,
+                        floor: item.Floor, seed: item.Seed,
+                        result: result, playerMaxHp: playerMaxHp));
+
+                    if (floorDone)
+                    {
+                        var elapsed = (DateTime.UtcNow - floorAgg.StartedAt).TotalSeconds;
+                        Console.WriteLine(SimProgress.FormatFloorSummary(
+                            item.Floor, floorAgg.Count,
+                            floorAgg.Cleared, floorAgg.Died, floorAgg.Timeout,
+                            floorAgg.KillsAvg, elapsed));
+                    }
+                }
+            });
 
         var elapsedSec = (DateTime.UtcNow - startedAt).TotalSeconds;
-        Console.WriteLine($"# {allResults.Count} runs completed in {SimProgress.FormatWallTime(elapsedSec)}");
+        Console.WriteLine($"# {results.Count} runs completed in {SimProgress.FormatWallTime(elapsedSec)}");
+
+        // Sort once for deterministic CSV ordering and a stable aggregate
+        // table regardless of the order workers finished in.
+        var ordered = results.OrderBy(r => r.Floor).ThenBy(r => r.Seed).ToList();
 
         if (opts.OutPath is not null)
-            WriteCsv(opts.OutPath, allResults);
+            WriteCsv(opts.OutPath, ordered);
 
-        PrintAggregateSummary(allResults);
+        PrintAggregateSummary(ordered);
         return 0;
+    }
+
+    private readonly record struct WorkItem(int Floor, int Seed);
+
+    // Thread-safe per-floor accumulator. All mutations are under `_lock`
+    // because Add reads + writes multiple fields atomically and the floor
+    // banner needs a consistent snapshot.
+    private sealed class FloorAggregator
+    {
+        private readonly int _expected;
+        private readonly object _lock = new();
+        private int _cleared, _died, _timeout, _killsTotal, _count;
+
+        public DateTime StartedAt { get; }
+
+        public FloorAggregator(int expected, DateTime startedAt)
+        {
+            _expected = expected;
+            StartedAt = startedAt;
+        }
+
+        public int Count => _count;
+        public int Cleared => _cleared;
+        public int Died => _died;
+        public int Timeout => _timeout;
+        public double KillsAvg => _count == 0 ? 0 : (double)_killsTotal / _count;
+
+        // Returns true iff this call landed the final expected run for
+        // the floor, signalling the caller to emit the floor banner.
+        public bool Add(SimResult result)
+        {
+            lock (_lock)
+            {
+                _count++;
+                _killsTotal += result.EnemiesKilled;
+                switch (result.Outcome)
+                {
+                    case SimOutcome.PlayerCleared: _cleared++; break;
+                    case SimOutcome.PlayerDied:    _died++;    break;
+                    case SimOutcome.Timeout:       _timeout++; break;
+                }
+                return _count == _expected;
+            }
+        }
     }
 
     private static ISimPilot MakePilot(string id) => id switch
@@ -288,6 +367,10 @@ public static class Program
                 case "--out":
                     opts.OutPath = RequireValue(args, ref i);
                     break;
+                case "-p":
+                case "--parallel":
+                    opts.Parallel = int.Parse(RequireValue(args, ref i), CultureInfo.InvariantCulture);
+                    break;
                 case "-i":
                 case "--interactive":
                     opts.Interactive = true;
@@ -333,6 +416,7 @@ public static class Program
           --seed-base <n>      First seed; subsequent seeds are seed-base + i (default: 1000)
           --pilot <id>         Pilot strategy: greedy (default: greedy)
           --out <path>         CSV output path (omit to skip CSV; aggregates still print)
+          -p, --parallel <n>   Worker threads (default: ProcessorCount; set to 1 for serial)
           -i, --interactive    Prompt for each option (defaults shown in brackets); combine
                                with explicit args to pre-seed answers (e.g. -i --seeds 100)
           -h, --help           Show this message
@@ -349,6 +433,7 @@ public static class Program
         public string PilotId = "greedy";
         public string? OutPath;
         public bool Interactive;
+        public int? Parallel; // null = ProcessorCount default; 1 = serial
     }
 
     private sealed class ArgException(string message) : Exception(message);
