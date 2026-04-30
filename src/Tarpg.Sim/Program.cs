@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Text;
 using Tarpg.Core;
 using Tarpg.Sim;
+using Tarpg.World;
 
 namespace Tarpg.Sim.Cli;
 
@@ -26,6 +27,7 @@ public static class Program
         try
         {
             var opts = ParseArgs(args);
+            if (opts.DumpFloor) return DumpFloor(opts);
             if (opts.Interactive) opts = PromptInteractive(opts);
             return RunSweep(opts);
         }
@@ -36,6 +38,91 @@ public static class Program
             Console.Error.WriteLine(Usage);
             return 2;
         }
+    }
+
+    // Generation diagnostic: build a single floor (zone, seed, floor) and
+    // print a full ASCII map with entry / threshold / enemy spawns marked,
+    // plus reachability from entry to each spawn. No sim runs. Useful for
+    // debugging "why does this seed time out" without parsing CSV outputs.
+    private static int DumpFloor(Options opts)
+    {
+        ContentInitializer.Initialize();
+        var zone = Registries.Zones.Get(opts.ZoneId);
+
+        // Mirror TickRunner.Run's seed derivation so the dumped layout
+        // matches what a sim run on the same seed actually generated.
+        var rng = new Random(opts.SeedBase);
+        var floorSeed = rng.Next();
+        var floor = opts.FloorMin;
+
+        var generated = zone.Generator.Generate(160, 60, floorSeed, floor);
+
+        // Determine spawn types using the same RNG flow as TickRunner.Run
+        // (one PickEnemyForZone call per spawn point, in order).
+        var spawnDefs = new List<Tarpg.Enemies.EnemyDefinition>();
+        foreach (var _ in generated.EnemySpawnPoints)
+            spawnDefs.Add(PickEnemyForZoneDiag(zone, rng));
+
+        Console.WriteLine($"# dump-floor: zone={opts.ZoneId} seed={opts.SeedBase} floor={floor}");
+        Console.WriteLine($"# entry=({generated.Entry.X},{generated.Entry.Y}) threshold=({generated.BossAnchor.X},{generated.BossAnchor.Y})");
+        Console.WriteLine($"# spawn points ({generated.EnemySpawnPoints.Count}):");
+        for (var i = 0; i < generated.EnemySpawnPoints.Count; i++)
+        {
+            var p = generated.EnemySpawnPoints[i];
+            var def = spawnDefs[i];
+            var path = generated.Map.FindPath(generated.Entry, p);
+            var reach = path is null ? "UNREACHABLE" : $"reachable in {path.Count} steps";
+            Console.WriteLine($"#   [{i}] {def.Id,-12} at ({p.X,3},{p.Y,2}) — {reach}");
+        }
+
+        // Cell legend: # wall, . floor, > threshold, E entry, digit = spawn index (0-9, then letters).
+        Console.WriteLine();
+        var w = generated.Map.Width;
+        var h = generated.Map.Height;
+        var spawnByPos = new Dictionary<Position, int>();
+        for (var i = 0; i < generated.EnemySpawnPoints.Count; i++)
+            spawnByPos[generated.EnemySpawnPoints[i]] = i;
+
+        for (var y = 0; y < h; y++)
+        {
+            var row = new System.Text.StringBuilder(w);
+            for (var x = 0; x < w; x++)
+            {
+                var p = new Position(x, y);
+                if (p == generated.Entry) { row.Append('E'); continue; }
+                if (p == generated.BossAnchor) { row.Append('>'); continue; }
+                if (spawnByPos.TryGetValue(p, out var idx))
+                {
+                    row.Append(idx < 10 ? (char)('0' + idx) : (char)('a' + (idx - 10)));
+                    continue;
+                }
+                row.Append(generated.Map.IsWalkable(p) ? '.' : '#');
+            }
+            Console.WriteLine(row.ToString());
+        }
+        return 0;
+    }
+
+    // Lifted out of TickRunner so the diagnostic can derive enemy types
+    // using the same RNG sequence without coupling to the runner's loop.
+    private static Tarpg.Enemies.EnemyDefinition PickEnemyForZoneDiag(ZoneDefinition zone, Random rng)
+    {
+        var totalWeight = 0;
+        foreach (var def in Registries.Enemies.All)
+        {
+            if (!def.ZoneIds.Contains(zone.Id)) continue;
+            if (def.RarityWeight <= 0) continue;
+            totalWeight += def.RarityWeight;
+        }
+        var pick = rng.Next(totalWeight);
+        foreach (var def in Registries.Enemies.All)
+        {
+            if (!def.ZoneIds.Contains(zone.Id)) continue;
+            if (def.RarityWeight <= 0) continue;
+            pick -= def.RarityWeight;
+            if (pick < 0) return def;
+        }
+        throw new InvalidOperationException("Weighted enemy roll fell through.");
     }
 
     // Interactive prompt: walks through each option in order, showing the
@@ -376,6 +463,9 @@ public static class Program
                 case "--interactive":
                     opts.Interactive = true;
                     break;
+                case "--dump-floor":
+                    opts.DumpFloor = true;
+                    break;
                 case "-h":
                 case "--help":
                     Console.WriteLine(Usage);
@@ -420,6 +510,9 @@ public static class Program
           -p, --parallel <n>   Worker threads (default: ProcessorCount; set to 1 for serial)
           -i, --interactive    Prompt for each option (defaults shown in brackets); combine
                                with explicit args to pre-seed answers (e.g. -i --seeds 100)
+          --dump-floor         Print a single floor's ASCII map + entry / threshold / spawn
+                               positions + reachability check, then exit. Uses --seed-base
+                               and the first --floors value. No sim runs.
           -h, --help           Show this message
         """;
 
@@ -435,6 +528,7 @@ public static class Program
         public string? OutPath;
         public bool Interactive;
         public int? Parallel; // null = ProcessorCount default; 1 = serial
+        public bool DumpFloor;
     }
 
     private sealed class ArgException(string message) : Exception(message);
