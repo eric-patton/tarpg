@@ -25,5 +25,9 @@ public static class Hunter
         },
         BaseHealth = 50,
         BaseResource = 100,
+        // "regenerating Focus" per the class tagline — without this the
+        // Hunter has zero resource generation (no auto-attack hits in the
+        // ranged kit) and cannot cast anything past the free QuickShot.
+        PassiveResourceRegenPerSec = 3.0f,
     };
 }

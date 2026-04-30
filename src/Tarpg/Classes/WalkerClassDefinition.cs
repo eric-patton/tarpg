@@ -27,4 +27,10 @@ public sealed class WalkerClassDefinition : IRegistryEntry
     // Base stats at level 1. Per-class growth curves applied on level-up.
     public int BaseHealth { get; init; } = 50;
     public int BaseResource { get; init; } = 100;
+
+    // Passive resource regen per sim-second. Defaults to 0; classes whose
+    // resource is meant to regenerate independently of combat hits set this
+    // (Hunter's Focus, future Cipher's Insight). Reaver's Rage stays at 0
+    // because its design is hit-driven — see GameLoopController.GrantResourceOnHit.
+    public float PassiveResourceRegenPerSec { get; init; } = 0f;
 }

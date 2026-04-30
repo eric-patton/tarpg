@@ -60,6 +60,7 @@ public sealed class GameLoopController
 
     private float _timeSinceLastDamage = OutOfCombatRegenDelaySec;
     private float _regenAccumulator;
+    private float _resourceRegenAccumulator;
 
     private readonly SkillDefinition?[] _slotSkills = new SkillDefinition?[SlotCount];
     private readonly float[] _slotCooldowns = new float[SlotCount];
@@ -90,6 +91,7 @@ public sealed class GameLoopController
     {
         Array.Clear(_slotCooldowns, 0, _slotCooldowns.Length);
         _regenAccumulator = 0f;
+        _resourceRegenAccumulator = 0f;
         _timeSinceLastDamage = OutOfCombatRegenDelaySec;
         _combat.Clear();
         _movement.Stop();
@@ -231,6 +233,7 @@ public sealed class GameLoopController
         }
 
         TickHpRegen(deltaSec);
+        TickResourceRegen(deltaSec);
     }
 
     private void TryPickupFloorItems()
@@ -256,6 +259,23 @@ public sealed class GameLoopController
         if (heal <= 0) return;
         _regenAccumulator -= heal;
         _player.Health = Math.Min(_player.MaxHealth, _player.Health + heal);
+    }
+
+    // Class-defined passive resource regen. Independent of HP regen's
+    // out-of-combat delay — Focus / Insight are *always* trickling so the
+    // class can act mid-fight, not just when safe. Reaver's Rage has a
+    // PassiveResourceRegenPerSec of 0 by design (it banks on hit, not in idle).
+    private void TickResourceRegen(float deltaSec)
+    {
+        var rate = _player.WalkerClass.PassiveResourceRegenPerSec;
+        if (rate <= 0f) return;
+        if (_player.Resource >= _player.MaxResource) { _resourceRegenAccumulator = 0f; return; }
+
+        _resourceRegenAccumulator += deltaSec * rate;
+        var gain = (int)_resourceRegenAccumulator;
+        if (gain <= 0) return;
+        _resourceRegenAccumulator -= gain;
+        _player.Resource = Math.Min(_player.MaxResource, _player.Resource + gain);
     }
 
     private void OnPlayerDamaged(Entity entity, int amount)

@@ -58,7 +58,7 @@ public static class Program
         ParseFloorRange(floorRange, out opts.FloorMin, out opts.FloorMax);
         opts.SeedCount = PromptInt("Seeds per floor", seed.SeedCount);
         opts.SeedBase = PromptInt("Seed base", seed.SeedBase);
-        opts.PilotId = PromptString("Pilot (greedy)", seed.PilotId);
+        opts.PilotId = PromptString("Pilot (greedy / kiting)", seed.PilotId);
         opts.Parallel = PromptInt("Parallel workers (1 = serial)", seed.Parallel ?? Environment.ProcessorCount);
         var outPath = PromptString("CSV output path (blank = skip)", seed.OutPath ?? "");
         opts.OutPath = string.IsNullOrWhiteSpace(outPath) ? null : outPath;
@@ -237,7 +237,8 @@ public static class Program
     private static ISimPilot MakePilot(string id) => id switch
     {
         "greedy" => new GreedySimPilot(),
-        _ => throw new ArgException($"Unknown pilot '{id}' (supported: greedy)"),
+        "kiting" => new KitingSimPilot(),
+        _ => throw new ArgException($"Unknown pilot '{id}' (supported: greedy, kiting)"),
     };
 
     private static void WriteCsv(string path, IReadOnlyList<RunRecord> rows)
@@ -414,7 +415,7 @@ public static class Program
           --floors <range>     Floor range, e.g. "1-15" or "5" (default: 1-10)
           --seeds <n>          Seeds per floor (default: 25)
           --seed-base <n>      First seed; subsequent seeds are seed-base + i (default: 1000)
-          --pilot <id>         Pilot strategy: greedy (default: greedy)
+          --pilot <id>         Pilot strategy: greedy | kiting (default: greedy)
           --out <path>         CSV output path (omit to skip CSV; aggregates still print)
           -p, --parallel <n>   Worker threads (default: ProcessorCount; set to 1 for serial)
           -i, --interactive    Prompt for each option (defaults shown in brackets); combine
