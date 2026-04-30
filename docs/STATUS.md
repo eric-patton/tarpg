@@ -1,7 +1,7 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-29
-> **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); one playable class (Reaver); two-sided auto-attack melee combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen.
+> **Updated**: 2026-04-30
+> **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); one playable class (Reaver) with full 5-slot kit (M2/Q/W/E/R) and skill VFX; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack melee combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite and a `tarpg-sim` CLI that sweeps (floor × seed) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
 
@@ -79,9 +79,13 @@ When you `run`, you get:
 |---|---|
 | **Left-click on enemy** | Attack-target: walk into range, auto-attack |
 | **Left-click on floor** | Walk there |
-| **Right-click** | Activate the M2 skill slot (currently an empty placeholder until skills are bound to it) |
-| **Q** | Activate the Q skill (Cleave for the Reaver — chebyshev-adjacent AOE, 10 dmg, 10 Rage, 1.0s cooldown) |
-| **W / E / R** | Activate the W/E/R skill slots (placeholders today) |
+| **Right-click** | M2 — Heavy Strike (cursor-cell, range-gated, 25 dmg, 0 cost, 1.5s cd) |
+| **Q** | Cleave (chebyshev-adjacent AOE, 10 dmg, 10 Rage, 1.0s cd) |
+| **W** | Charge (dash up to 6 tiles toward cursor, first enemy hit takes 15 dmg, 15 Rage, 5s cd) |
+| **E** | War Cry (heal 25 HP, 25 Rage, 12s cd) |
+| **R** | Whirlwind (chebyshev-2 AOE around caster, 15 dmg, 30 Rage, 6s cd) |
+| **1** | Drink HP potion (`Potions.HealthPotionHealAmount` HP, 0.5s drink cd) |
+| **2** | Drink Resource potion (`Potions.ResourcePotionRestoreAmount` resource, 0.5s drink cd) |
 | **Shift + Left-click on enemy** | Force-stand-attack — no approach, only swings if adjacent |
 | **Shift + Left-click on empty floor** | Stop walking in place (only when there's no active combat target) |
 | **`+` / `-` / mouse wheel** | Zoom: 0.5×, 1×, 1.5×, 2×, 2.5×, 3× |
@@ -100,8 +104,8 @@ When you `run`, you get:
 | `RenderSettings.SquareFontPath` | `"Content/font_12x12.font"` | same |
 | `RenderSettings.EnableFov` | `true` (debug-bisection toggle) | same |
 | `RenderSettings.UnseenDimFactor` | `0.5f` | same |
-| `GameScreen.FovRadius` | `10` (will move to `ModifierContext.FieldOfViewRadius` once context is plumbed in) | `UI/GameScreen.cs` |
-| `ModifierContext.FieldOfViewRadius` | `10.0f` (canonical baseline; matches `GameScreen.FovRadius`) | `Modifiers/ModifierContext.cs` |
+| `GameLoopController.FovRadius` | `10` (canonical now; `ModifierContext.FieldOfViewRadius` still mirrors but the loop owns it) | `Core/GameLoopController.cs` |
+| `ModifierContext.FieldOfViewRadius` | `10.0f` (canonical baseline; matches `GameLoopController.FovRadius`) | `Modifiers/ModifierContext.cs` |
 | `BspGenerator.MinLeafWidth` / `MinLeafHeight` | `12` / `8` | `World/Generation/BspGenerator.cs` |
 | `BspGenerator.MaxDepth` | `4` | same |
 | `BspGenerator.MinRoomWidth` / `MinRoomHeight` | `4` / `3` | same |
@@ -121,8 +125,12 @@ When you `run`, you get:
 | `EnemyDefinition.PackSize` | per-enemy (default 1; pups 3) | same |
 | `GameScreen.HpScalePerFloor` / `DmgScalePerFloor` | `0.15f` / `0.10f` (linear per descent depth) | `UI/GameScreen.cs` |
 | `GameScreen.PackSpreadRadiusMax` | `3` (chebyshev rings filled when expanding a pack) | same |
-| `GameScreen.OutOfCombatRegenDelaySec` / `RegenPerSec` | `3.0f` / `5.0f` (HP/sec after 3s without damage) | same |
-| `GameScreen.ResourceGainPerAutoAttackHit` | `5` (Rage per landed auto-attack swing) | same |
+| `GameLoopController.OutOfCombatRegenDelaySec` / `RegenPerSec` | `3.0f` / `5.0f` (HP/sec after 3s without damage) | `Core/GameLoopController.cs` |
+| `GameLoopController.ResourceGainPerAutoAttackHit` | `5` (Rage per landed auto-attack swing) | same |
+| `GameScreen.LootDropChance` | `0.08f` (per enemy kill) | `UI/GameScreen.cs` |
+| `Potions.HealthPotionHealAmount` | `40` HP | `Items/Potions.cs` |
+| `Potions.ResourcePotionRestoreAmount` | `30` resource | same |
+| `Potions.DrinkCooldownSec` | `0.5f` (per-potion-type spam gate) | same |
 | `Cleave.CooldownSec` / `Cost` / `Damage` | `1.0f` / `10` Rage / `10` (matches base auto-attack) | `Skills/Cleave.cs` |
 | `HeavyStrike.CooldownSec` / `Cost` / `Damage` | `1.5f` / `0` / `25` (single-target, range-gated) | `Skills/HeavyStrike.cs` |
 | `Charge.CooldownSec` / `Cost` / `Damage` / `MaxDistanceTiles` | `5.0f` / `15` Rage / `15` / `6` | `Skills/Charge.cs` |
@@ -154,6 +162,24 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Health & Resource potions — drop, pickup, drink, HUD
+- **`Items/Potions.cs`** (new) — two `ItemDefinition`s (`health_potion`, `resource_potion`, both `ItemSlot.None` glyph `!`) plus the per-potion tunables: `HealthPotionHealAmount = 40`, `ResourcePotionRestoreAmount = 30`, `DrinkCooldownSec = 0.5f`. Heal / restore amounts and glyph colors live here instead of growing `ItemDefinition` for every new consumable shape — when more variants land we promote them to a `ConsumableData` record.
+- **`Entities/FloorItem.cs`** (new) — `Entity` subclass with `RenderLayer = 20` (between terrain `10` and creatures `50` so live actors draw on top). Holds an `ItemDefinition` reference; glyph + name forwarded from the definition.
+- **`Inventory/Inventory.cs`** (new) — first-cut consumables-only inventory on `Player`. Tracks `HealthPotionCount` / `ResourcePotionCount`; `Add(ItemDefinition)` increments and `TryConsume(ItemDefinition)` decrements + reports false on empty stack. Full 32-slot bag + equipment slots (GDD §6) lands when equipment loot does.
+- **`Items/LootDropper.cs`** (new) — pure-logic `RollDrop(enemy, rng, dropChance)` returning a `FloorItem?`. Lifted out of GameScreen so the roll is unit-testable + the sim harness can call the same code path when balance sweeps pull loot into scope.
+- **`Core/GameLoopController.cs`** — controller now owns the `List<FloorItem>` and a `TryPickupFloorItems` step inside `Tick` that pulls every item on the player's tile into `Player.Inventory`. Shared list reference (mirroring the enemy pattern) means GameScreen's `_floorItemVisuals` reaps orphaned visuals after each tick.
+- **`UI/GameScreen.cs`** — `LootDropChance = 0.08f` (≈ 1 drop per 12 kills). `OnEntityDied` calls `LootDropper.RollDrop`; on success a `SadEntity` visual is added to `_entityManager` and the FloorItem to the shared list. `LoadFloor` clears items + visuals on descent / death (potions don't persist between floors). New `1` / `2` keys in `ProcessKeyboard` invoke `TryDrinkHealthPotion` / `TryDrinkResourcePotion` (gated by per-potion `_hpPotionCooldown` / `_resourcePotionCooldown`); each drink fires a brief screen-flash via `SkillVfx` (HP green like War Cry, Resource warm orange) for the "drank something" cue. `DrawHud` now reads live counts from `_player.Inventory` so the `ConsumableSlot` placeholders show real `x{Count}`.
+- **Tests** — `Items/InventoryTests.cs`, `Items/PotionPickupTests.cs` (drives `GameLoopController.Tick` directly with a player on top of a `FloorItem`), `Items/LootDropperTests.cs` (forced drop chance + RNG-branching coverage). Pickup test pattern mirrors the existing AI tests — no SadConsole dependency.
+
+### Headless game-loop controller, xUnit suite, `tarpg-sim` CLI
+- **`Core/GameLoopController.cs`** (new) — extracts the per-tick logic (movement, combat, AI, regen, slot cooldowns, threshold detection, FOV recompute, floor-item pickup) out of GameScreen.Update into a UI-free controller. Constructor takes `Player`, `List<Enemy>`, `Map`, `MovementController`, `CombatController`, `List<FloorItem>?`. Public `Tick(deltaSec, cellAspect, frozen, lastPlayerTile)`; caller checks `SteppedOnThreshold` / `PlayerDied` flags after each tick. Slot state (`_slotSkills` / `_slotCooldowns`) and the regen timer / accumulator now live here. `TryCastSkill` gates on cooldown + resource and returns a `CastResult` carrying `PreCastPosition` / `PostCastPosition` so the caller can choose to animate the snap (GameScreen) or leave the player at the snapped position immediately (sim).
+- **`UI/GameScreen.cs`** — Update is now: dash-lerp visual → `_loop.Tick` → react to flags → tick UI effects → render. `TryActivateSlot` is a thin wrapper over `_loop.TryCastSkill` that handles the dash visual setup (rolling the player back to PreCast, starting the lerp). The behavior change vs. before: old enemies on the descent floor get one final AI tick before `Descend()` swaps the floor, and new floor enemies don't tick on the descend frame (was the inverse before). Imperceptible at 60Hz.
+- **Explicit RNG seeding** — `GameScreen` now takes an optional `Random?` constructor arg; uses `_rng.Next()` for floor seeds and weighted enemy picks instead of `Environment.TickCount` / `Random.Shared`. `Program.cs` seeds from `Environment.TickCount`; tests / sim runners pass a fixed seed for reproducibility.
+- **xUnit suite** (5 files in `src/Tarpg.Tests/`) — first real tests after the `UnitTest1.cs` stub: `MovementController` (arrival timing, wall slide), `CombatController` (range / cooldown gates), `MeleeChargerAi` + `RangedKiterAi` (FOV-symmetric aggro, kiting band, hitscan), `BspGenerator` (same-seed determinism, walkable entry / threshold / spawns, threshold reachable from entry, deeper-floor slot count). `Helpers/TestMaps.cs` builds open-floor + walls fixtures without going through the full BSP pipeline.
+- **`Sim/`** in the main project (new) — `TickRunner` runs a single floor headless under an `ISimPilot` decision layer, accumulates kills / damage / HP min / skill uses / per-enemy-id kill counts in a `SimResult`. Ships `GreedySimPilot` (nearest-enemy chase, melee, fire AOE on dense clusters, walk to threshold when clear) — a "pressure-test" pilot, not optimal play.
+- **`src/Tarpg.Sim/`** (new console project, `tarpg-sim` binary) — sweeps a (floor × seed) grid for one (zone, class, pilot) combo and writes per-run CSV (`seed, floor, outcome, ticks, sim_seconds, initial_enemies, enemies_killed, dmg_dealt, dmg_taken, hp_end, hp_min, skill_uses, kills_<id>...`) plus a per-floor aggregate footer (cleared%, died%, timeout%, HpEnd p50, HpMin p50, kills avg, time avg). Args: `--zone`, `--class`, `--floors a-b`, `--seeds n`, `--seed-base n`, `--pilot greedy`, `--out path`. `sim.bat` wrapper alongside `run.bat` / `test.bat`.
+- **First sweep eyeballed**: `sim --floors 1-3 --seeds 5` returns 100% cleared at F1-F3 with HpEnd p50 ≈ 65 / 65 / 65, taking damage on every floor (HpMin drifts down with depth). Greedy pilot's not optimal so this is a soft baseline; real balance work waits for a second class.
 
 ### Skill VFX system — area highlights, screen shake, screen flash
 - **`Skills/ISkillVfx.cs`** (new) — interface lives in `Tarpg.Skills` so skill behaviors don't pull a UI dependency for what's logically "side effects of the ability." Three primitives: `PlayAreaHighlight(tiles, color, lifeSec)`, `PlayScreenShake(intensityPx, durationSec)`, `PlayScreenFlash(color, durationSec)`. All fire-and-forget; the renderer ticks the resulting state independently.
@@ -360,32 +386,41 @@ When you `run`, you get:
 
 ## Up next (immediate work queue)
 
-### 1. Health potions as actual items
-**Goal**: passive regen handles between-fight healing, but for emergency-during-combat healing you need a consumable. The bottom-bar HUD already has the slot scaffolding (`ConsumableSlot` placeholder for `1` HP / `2` Resource), so this is mostly the drop / pick-up / use pipeline plus the first cut of an inventory model.
+### 1. Second playable class
+**Goal**: the Reaver kit is in but tuned by gut. Before a real balance pass we need a second class with its own resource (Focus / Insight / Echo) and skill kit so the pass can compare across kits instead of just adjusting Reaver in isolation. Hunter (Focus) is the natural pick — it'll exercise the ranged / kiter side of combat that the Reaver largely sidesteps.
 
-**Approach**: drop on enemy kill at low chance (e.g. 8% per kill). Drop renders as a glyph on the floor (`!` red for HP, `!` orange for Resource). Walk over to pick up. Increments the consumable count. `1` key drinks an HP potion (heal + per-potion cooldown). `2` key drinks a resource potion. Stacks, single belt slot per type for v0.
+**Approach**: 5 skills along the same `M2 / Q / W / E / R` template (small swing, primary, engage, bail-out, nuke), with VFX hooks via the existing `ISkillVfx` primitives. Add a `WalkerClassDefinition.GetDefaultSlotSkills()`-style accessor (or a registry-side lookup) so `GameScreen` and `TickRunner` don't both hardcode the slot wiring per class.
 
-**Files to touch**: new `Items/ItemDefinition.cs` + `Items/HealthPotion.cs` / `ResourcePotion.cs`, possibly first cut of `Inventory.cs`, `UI/GameScreen.cs` (drop on kill, pickup on tile-cross, key bindings, ConsumableSlot wiring with real counts).
+**Files to touch**: 5 new `Skills/<HunterSkill>.cs`, possibly extend `WalkerClassDefinition`, light edits in `GameScreen.cs` + `Sim/TickRunner.cs` for the slot-wiring lookup. Add a Hunter sweep to `tarpg-sim` smoke output.
 
-**Estimated effort**: 1–2 sessions — most of the lift is the inventory cut and the on-floor item entity, both of which unlock follow-on items (loot drops, scrolls, etc.).
+**Estimated effort**: 1–2 sessions for the kit; plumbing changes are small.
 
-### 2. Skill / class balance pass
-**Goal**: 5 skills are in but they were tuned by gut not by play data. The Cleave-vs-auto-attack note is the canary; once the player has tools to actually play with, sit down and tune Damage / Cost / Cooldown across the whole kit so each skill has a clear identity (M2 = small/free swing, Q = horde clear, W = engage, E = bail-out, R = nuke).
+### 2. Skill / class balance pass (deferred until #1 lands)
+**Goal**: 5 Reaver skills are in but were tuned by gut not by play data. Cleave-vs-auto-attack note is the canary; once a second class lands, sit down with `tarpg-sim` outputs and tune Damage / Cost / Cooldown across both kits so each skill has a clear identity (M2 = small/free, Q = horde clear, W = engage, E = bail-out, R = nuke) AND each class has a recognizable signature.
 
-**Approach**: open-ended balance tuning — record perceived strength on a few floors, adjust constants, replay. Probably also want to introduce damage scaling tied to player level / weapon (currently all skills hardcode their damage value).
+**Approach**: drive `tarpg-sim --floors 1-15 --seeds 100` for both classes, compare per-floor cleared% / HpEnd / kill-time distributions, adjust constants in each `Skills/*.cs`, re-run. Probably also factor weapon damage out of skills into a `PlayerStats.cs` so weapon drops can scale skill damage uniformly.
 
-**Files to touch**: each `Skills/*.cs` (numbers), maybe a new `PlayerStats.cs` if we factor weapon damage out of the skills.
+**Files to touch**: each `Skills/*.cs` (numbers), enemy stat files, possibly new `PlayerStats.cs`.
 
-**Estimated effort**: 1 session of pure tuning, more if we introduce a weapon / level scaling abstraction.
+**Estimated effort**: 1 focused tuning session per class once both kits are in, plus the weapon / level scaling abstraction (~half a session) if we go that route.
+
+### 3. Real corpse-run death
+**Goal**: replace "regen on death, same floor, full HP" with corpse drop + XP loss + return-to-town. Town doesn't exist yet so this couples to the town milestone — but the death loop itself can land first as "die → reset to F1 with carried inventory minus a dropped item."
+
+**Approach**: on death, spawn a corpse FloorItem at the death tile carrying the player's potions + (later) a dropped equipment item. Reset to F1 with full HP + empty inventory. Walking onto the corpse retrieves the items.
+
+**Files to touch**: `UI/GameScreen.cs` (replace `RegenerateAfterDeath` semantics), new `Entities/Corpse.cs` (or reuse FloorItem), `Inventory/Inventory.cs` (drop / restore methods).
+
+**Estimated effort**: 1 session for the corpse-only loop; town integration waits.
 
 ---
 
 ## Roadmap (ordered, but not strict)
 
 ### Soon — next 3–5 sessions
-- [ ] Health potions as items (above)
-- [ ] Skill / class balance pass (above)
-- [ ] **Real corpse-run death**: replace "regen on death" with corpse drop, XP loss, return-to-town. Town doesn't exist yet so this is multi-step.
+- [ ] Second playable class (above)
+- [ ] Skill / class balance pass (above) — deferred until #1
+- [ ] Real corpse-run death (above)
 - [ ] **Cellular automata roughening for Wolfwood floor edges** + flood-fill connectivity repair.
 - [ ] **Distinct boss-anchor tile**: today the Threshold doubles as boss-spawn marker; once descent meets boss arenas they can't be the same.
 - [ ] **Pack composition rolls**: today every BSP slot rolls a single weighted draw; deep-floor variety would benefit from "mixed packs" (e.g., 2 pups + 1 howler around the same anchor).
@@ -437,18 +472,20 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **Half-step zoom (1.5×, 2.5×) is fuzzy** with the 12×12 Milazzo font. Integer multiples (1×, 2×, 3×) are crisp. Acceptable trade-off; can document or remove half-steps if it bothers user.
 - **Mouse hover doesn't preview attack target** — would help readability ("am I going to engage this wolf if I click here?")
 - **No save/load yet** — character persists only within the running session.
-- **No corpses / loot on death** — enemies just disappear when killed.
+- **No player corpse on death** — when the player dies, the floor regenerates at full HP (corpse-run loop is item #3 in Up next). Enemy kills DO drop loot (HP / Resource potions at `LootDropChance = 0.08`).
+- **Pickup is automatic on step** — walking onto a `FloorItem` tile vacuums it into inventory with no preview or confirm. Fine for potions today; later equipment drops may want a hold-Alt-to-highlight + click-to-pick-up flow per GDD §6.
+- **Drink cooldown is per-potion-type, not global** — you can chain HP + Resource potions in the same frame since `_hpPotionCooldown` and `_resourcePotionCooldown` are independent. May want a unified "consumable busy" gate.
 - **Click-to-target ignores FOV** — Shift+click on enemy still works at any distance regardless of visibility; click-to-walk targets and `FindLiveEnemyAt` consult position only. Now that the player can take damage, this lets you stand-attack unseen wolves through walls — worth tightening soon.
 - **Enemy↔enemy collision doesn't exist** — multiple wolves chasing the player will overlap on the same tile when they reach melee range. Visual stacking only; doesn't break gameplay.
-- **Death → free regen with full HP, same floor** — placeholder until corpse-run / XP-loss death lands. Should probably reset to F1 (or town, when town exists) instead of staying mid-descent.
 - **`EnemyDefinition.ZoneIds` is a string array, no compile-time check** — typoing a zone id silently makes an enemy un-spawnable. Worth a typed `ZoneRef` or registry-validation pass at startup once the zone count grows.
 - **`EnemyDefinition.AiTag` is a string, no compile-time check** — same issue as ZoneIds. The `Enemy.ResolveAi` switch throws at first spawn if the tag is wrong, but it'd be nicer to fail at content-init time.
 - **No projectile entities for ranged attacks yet** — the howler's hitscan damage gives no spatial cue for the attack itself; the player only knows damage happened from the HitFeedback flash + number. A short glyph trail along the LOS line (or a real projectile entity that travels) is the natural follow-up.
 - **Stat scaling is single-zone, single-curve** — `HpScalePerFloor` / `DmgScalePerFloor` are global. Different zones (Drowned Hall, Hollow Court, etc.) will likely want their own curves, and "elite" enemies probably shouldn't scale linearly the same way commons do.
 - **Pack spawn doesn't preserve formation across regen** — a pup pack that was a tight 3-cluster at spawn time can scatter as the AIs chase the player. Future "alpha + pack" mechanics may want the pack to stick together.
-- **Cleave feels underpowered vs auto-attack at low enemy counts** — 10 dmg × N adjacent enemies on a 1.0s cooldown for 10 Rage vs the auto-attack's 10 dmg single-target on 0.8s for free. Math wins for Cleave only at 3+ adjacent enemies, and even there it doesn't *feel* like a payoff. Wants a class-balancing pass — bigger Cleave damage, knockback, or a stagger window — once more skills land and the resource economy is tunable in context.
+- **Class slot wiring is hardcoded twice** — `GameScreen` constructor and `TickRunner.WireDefaultSkills` both do `loop.SetSlotSkill(M2, "heavy_strike")` etc for the Reaver. When the second class lands, lift this into `WalkerClassDefinition.GetDefaultSlotSkills()` (or similar registry-side accessor) so adding a kit doesn't require editing two files.
+- **GreedySimPilot is pressure-testing, not optimal play** — it doesn't kite, doesn't skip enemies that aren't worth the HP cost, doesn't manage Rage strategically. CSV outputs are useful as relative comparisons (this skill kit vs that one, Reaver vs Hunter) but absolute "win rate" numbers will undershoot what a competent player achieves.
+- **Cleave-vs-auto-attack feels off at low enemy counts** — 10 dmg × N adjacent enemies on a 1.0s cooldown for 10 Rage vs the auto-attack's 10 dmg single-target on 0.8s for free. Math wins for Cleave only at 3+ adjacent enemies, and even there it doesn't *feel* like a payoff. Holding for the deferred balance pass — once a second class lands, drive `tarpg-sim` numbers to retune the whole kit holistically.
 - **Threshold tile is the descent trigger AND the BSP boss-anchor marker** — these will conflict the moment boss arenas land (you'd descend onto the boss tile instead of fighting). Need a distinct boss-spawn tile (or a sidecar marker layer on Map) before the Wolf-Mother arena.
-- **Per-floor depth is plumbed but unused** — every floor generates with identical density and stat pool regardless of `floor` value. Scaling is the second item in Up next.
 - **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
 - **Cellular automata pass for forest feel deferred** — listed under Polish / juice. Needs flood-fill connectivity repair before BSP+CA is safe.
 - **Doors at room↔corridor junctions deferred** — placed deliberately later (boss-arena gates, town buildings). Wolfwood gets none.
@@ -476,6 +513,7 @@ src/Tarpg/
     ContentInitializer.cs             reflection-based auto-discovery
     ResourceType.cs                   Rage / Focus / Insight / Echo
     RenderSettings.cs                 UseSquareCells toggle + font path
+    GameLoopController.cs             headless per-tick game logic (movement, combat, AI, regen, cooldowns, FOV, pickup)
   World/
     Map.cs                            tile grid + RogueSharp pathfinding wrap + FOV state
     Tile.cs                           per-cell type reference (visibility lives on Map)
@@ -510,17 +548,35 @@ src/Tarpg/
       RangedKiterAi.cs                Howler brain: kite at 4–6 tile band, hitscan damage on LOS
   Entities/
     Entity.cs                         base — ContinuousPosition, Health, IsDead, TakeDamage
-    Player.cs                         walker class, level, resource
+    Player.cs                         walker class, level, resource, Inventory
     Enemy.cs                          wraps EnemyDefinition
-  Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker
+    FloorItem.cs                      Entity subclass for items on the ground (zIndex 20)
+  Inventory/
+    Inventory.cs                      first-cut consumables-only — HP / Resource potion counts
+  Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker, Potions, LootDropper
   Skills/                             Definition, ISkillBehavior, ISkillVfx, Cleave, HeavyStrike, Charge, WarCry, Whirlwind
   Classes/                            WalkerClassDefinition, Reaver/Hunter/Cipher/Speaker
   Bosses/                             BossDefinition, WolfMother stub
   Modifiers/                          ModifierDefinition, IModifierBehavior, BurningFloor
+  Sim/
+    SimTypes.cs                       SimConfig / SimResult / SimOutcome
+    ISimPilot.cs                      strategy interface for what the player does each tick
+    GreedySimPilot.cs                 nearest-enemy melee pressure-test pilot
+    TickRunner.cs                     single-floor headless runner — drives loop until cleared / died / timeout
 
-src/Tarpg.Tests/                      xUnit project (no tests written yet)
+src/Tarpg.Sim/                        tarpg-sim console runner — sweeps (floor x seed) grids, writes CSV
+  Program.cs                          arg parser + sweep driver + aggregate summary
 
-tarpg.sln, global.json, .gitignore, run.bat, test.bat
+src/Tarpg.Tests/                      xUnit project (21+ tests across Movement / Combat / AI / BSP / Items / Sim)
+  Helpers/TestMaps.cs                 small open-floor / walls fixtures for unit tests
+  Movement/MovementControllerTests.cs
+  Combat/CombatControllerTests.cs
+  Enemies/Ai/MeleeChargerAiTests.cs   Enemies/Ai/RangedKiterAiTests.cs
+  Items/InventoryTests.cs             Items/PotionPickupTests.cs   Items/LootDropperTests.cs
+  Sim/WolfwoodBalanceTests.cs         smoke tests for the harness — fixed seeds, weak invariants
+  World/Generation/BspGeneratorTests.cs
+
+tarpg.sln, global.json, .gitignore, run.bat, test.bat, sim.bat
 ```
 
 ---

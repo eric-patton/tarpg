@@ -8,6 +8,7 @@ using Tarpg.Combat;
 using Tarpg.Core;
 using Tarpg.Enemies;
 using Tarpg.Entities;
+using Tarpg.Items;
 using Tarpg.Movement;
 using Tarpg.Skills;
 using Tarpg.UI.Effects;
@@ -126,6 +127,20 @@ public sealed class GameScreen : SadConsole.Console
     private readonly List<Enemy> _enemies = new();
     private readonly Dictionary<Enemy, SadEntity> _enemyVisuals = new();
 
+    // Loot drops on enemy kill. The list is shared with GameLoopController
+    // so its pickup-on-tile logic mutates the same collection we render.
+    private readonly List<FloorItem> _floorItems = new();
+    private readonly Dictionary<FloorItem, SadEntity> _floorItemVisuals = new();
+
+    // Chance per enemy kill that something drops. 0.08 = roughly one drop
+    // every 12 kills; tunable from sim runs once equipment loot lands too.
+    private const float LootDropChance = 0.08f;
+
+    // Per-potion drink-cooldowns. Indexed by item id; small dictionary
+    // keeps the door open for more consumable types without growing fields.
+    private float _hpPotionCooldown;
+    private float _resourcePotionCooldown;
+
     private bool _shiftHeld;
     private bool _wasLeftButtonDown;
     private bool _wasRightButtonDown;
@@ -221,7 +236,7 @@ public sealed class GameScreen : SadConsole.Console
         _map = floor.Map;
         _player = Player.Create(Reaver.Definition, floor.Entry);
 
-        _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat);
+        _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat, _floorItems);
         _loop.SetSlotSkill(SlotIndexM2, Registries.Skills.Get("heavy_strike"));
         _loop.SetSlotSkill(SlotIndexQ,  Registries.Skills.Get("cleave"));
         _loop.SetSlotSkill(SlotIndexW,  Registries.Skills.Get("charge"));
@@ -387,8 +402,23 @@ public sealed class GameScreen : SadConsole.Console
     {
         // Player death is handled by the regen flow — skip the kill burst
         // since the floor swaps before the spray would render.
-        if (entity is Enemy)
-            _hitFeedback.OnDied(entity);
+        if (entity is not Enemy enemy) return;
+        _hitFeedback.OnDied(enemy);
+        TryDropLoot(enemy);
+    }
+
+    private void TryDropLoot(Enemy enemy)
+    {
+        var dropped = LootDropper.RollDrop(enemy, _rng, LootDropChance);
+        if (dropped is null) return;
+
+        var visual = new SadEntity(dropped.Color, Color.Black, dropped.Glyph, zIndex: dropped.RenderLayer)
+        {
+            UsePixelPositioning = true,
+        };
+        _entityManager.Add(visual);
+        _floorItems.Add(dropped);
+        _floorItemVisuals[dropped] = visual;
     }
 
     // Walking onto a Threshold tile triggers descent: increment floor depth,
@@ -418,7 +448,16 @@ public sealed class GameScreen : SadConsole.Console
         _enemies.Clear();
         _enemyVisuals.Clear();
 
+        // Floor items don't persist between floors — leftover potions on the
+        // descent floor disappear when you take the threshold.
+        foreach (var visual in _floorItemVisuals.Values)
+            _entityManager.Remove(visual);
+        _floorItems.Clear();
+        _floorItemVisuals.Clear();
+
         _dashRemainingSec = 0f;
+        _hpPotionCooldown = 0f;
+        _resourcePotionCooldown = 0f;
 
         var seed = _rng.Next();
         System.Console.WriteLine(
@@ -507,6 +546,14 @@ public sealed class GameScreen : SadConsole.Console
         _loop.Tick(deltaSec, cellAspect, frozen, lastTile);
 
         ReapDead();
+        ReapPickedUpItems();
+
+        // Drink-cooldown decay — independent of skill cooldowns, since they
+        // gate consumable spam, not skill resource economy.
+        if (_hpPotionCooldown > 0f)
+            _hpPotionCooldown = MathF.Max(0f, _hpPotionCooldown - deltaSec);
+        if (_resourcePotionCooldown > 0f)
+            _resourcePotionCooldown = MathF.Max(0f, _resourcePotionCooldown - deltaSec);
 
         // React to the controller's tile-transition signals. Descent fully
         // reloads the floor (which resets _lastPlayerTile inside LoadFloor).
@@ -537,6 +584,7 @@ public sealed class GameScreen : SadConsole.Console
         _skillVfx.Render();
         SyncPlayerVisual();
         SyncEnemyVisuals();
+        SyncFloorItemVisuals();
         DrawHud();
 
         base.Update(delta);
@@ -561,7 +609,34 @@ public sealed class GameScreen : SadConsole.Console
         if (keyboard.IsKeyPressed(Keys.E)) TryActivateSlot(SlotIndexE);
         if (keyboard.IsKeyPressed(Keys.R)) TryActivateSlot(SlotIndexR);
 
+        // Consumable belt: 1 = HP potion, 2 = Resource potion. Press-edge
+        // (no auto-spam on hold) and gated by per-potion drink cooldown.
+        if (keyboard.IsKeyPressed(Keys.D1)) TryDrinkHealthPotion();
+        if (keyboard.IsKeyPressed(Keys.D2)) TryDrinkResourcePotion();
+
         return base.ProcessKeyboard(keyboard);
+    }
+
+    private void TryDrinkHealthPotion()
+    {
+        if (_hpPotionCooldown > 0f) return;
+        if (!_player.Inventory.TryConsume(Potions.HealthPotion)) return;
+        _player.Health = Math.Min(_player.MaxHealth,
+            _player.Health + Potions.HealthPotionHealAmount);
+        _hpPotionCooldown = Potions.DrinkCooldownSec;
+        // Brief green flash to sell the heal — same color the WarCry skill
+        // uses so the "you got better" feedback is unified.
+        _skillVfx.PlayScreenFlash(new Color(80, 220, 120), durationSec: 0.25f);
+    }
+
+    private void TryDrinkResourcePotion()
+    {
+        if (_resourcePotionCooldown > 0f) return;
+        if (!_player.Inventory.TryConsume(Potions.ResourcePotion)) return;
+        _player.Resource = Math.Min(_player.MaxResource,
+            _player.Resource + Potions.ResourcePotionRestoreAmount);
+        _resourcePotionCooldown = Potions.DrinkCooldownSec;
+        _skillVfx.PlayScreenFlash(new Color(220, 140, 40), durationSec: 0.25f);
     }
 
     public override bool ProcessMouse(MouseScreenObjectState state)
@@ -732,12 +807,35 @@ public sealed class GameScreen : SadConsole.Console
         }
     }
 
+    // The loop controller mutates _floorItems (removes picked-up entries).
+    // Drop the orphaned visual entries so the SadEntity doesn't linger
+    // on the world layer after the player has scooped up the potion.
+    private void ReapPickedUpItems()
+    {
+        if (_floorItemVisuals.Count == 0) return;
+        var live = new HashSet<FloorItem>(_floorItems);
+        var orphaned = new List<FloorItem>();
+        foreach (var item in _floorItemVisuals.Keys)
+            if (!live.Contains(item)) orphaned.Add(item);
+        foreach (var item in orphaned)
+        {
+            if (_floorItemVisuals.Remove(item, out var visual))
+                _entityManager.Remove(visual);
+        }
+    }
+
     private void SyncPlayerVisual() => SyncVisual(_player, _playerEntity);
 
     private void SyncEnemyVisuals()
     {
         foreach (var (enemy, visual) in _enemyVisuals)
             SyncVisual(enemy, visual);
+    }
+
+    private void SyncFloorItemVisuals()
+    {
+        foreach (var (item, visual) in _floorItemVisuals)
+            SyncVisual(item, visual);
     }
 
     // ContinuousPosition is in tile-space, where (cx + 0.5, cy + 0.5) means the
@@ -802,8 +900,8 @@ public sealed class GameScreen : SadConsole.Console
             new SkillSlot("E",  loopSlots[SlotIndexE],  loopCooldowns[SlotIndexE]),
             new SkillSlot("R",  loopSlots[SlotIndexR],  loopCooldowns[SlotIndexR]),
         };
-        var hpPotion = new ConsumableSlot("1", '!', Count: 0);
-        var resourcePotion = new ConsumableSlot("2", '!', Count: 0);
+        var hpPotion = new ConsumableSlot("1", Potions.HealthPotion.Glyph, _player.Inventory.HealthPotionCount);
+        var resourcePotion = new ConsumableSlot("2", Potions.ResourcePotion.Glyph, _player.Inventory.ResourcePotionCount);
         _statusPanel.Render(_player, slots, hpPotion, resourcePotion);
     }
 

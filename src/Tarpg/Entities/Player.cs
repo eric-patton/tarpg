@@ -12,6 +12,11 @@ public sealed class Player : Entity
     public int Resource { get; set; }
     public int MaxResource { get; set; } = 100;
 
+    // Consumables (potions today; full bag + equipment slots later). Owned
+    // by the player so it travels with the character through descent /
+    // death without GameScreen having to plumb it through LoadFloor.
+    public Tarpg.Inventory.Inventory Inventory { get; } = new();
+
     public override int RenderLayer => 100;
 
     public static Player Create(WalkerClassDefinition cls, Position startPos)

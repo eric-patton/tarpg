@@ -40,6 +40,7 @@ public sealed class GameLoopController
 
     public Player Player => _player;
     public List<Enemy> Enemies => _enemies;
+    public List<FloorItem> FloorItems => _floorItems;
     public Map Map { get => _map; set => _map = value; }
     public MovementController Movement => _movement;
     public CombatController Combat => _combat;
@@ -52,6 +53,7 @@ public sealed class GameLoopController
 
     private readonly Player _player;
     private readonly List<Enemy> _enemies;
+    private readonly List<FloorItem> _floorItems;
     private readonly MovementController _movement;
     private readonly CombatController _combat;
     private Map _map;
@@ -67,10 +69,12 @@ public sealed class GameLoopController
         List<Enemy> enemies,
         Map map,
         MovementController movement,
-        CombatController combat)
+        CombatController combat,
+        List<FloorItem>? floorItems = null)
     {
         _player = player;
         _enemies = enemies;
+        _floorItems = floorItems ?? new List<FloorItem>();
         _movement = movement;
         _combat = combat;
         _map = map;
@@ -198,6 +202,14 @@ public sealed class GameLoopController
             }
         }
 
+        // Floor-item pickup: any floor item on the player's current tile is
+        // transferred to inventory and removed from the live list. Caller
+        // syncs visuals by detecting the removal. Done unconditionally each
+        // tick so an item that lands directly on top of the player (drop on
+        // kill at melee range) gets picked up next frame without forcing
+        // the player to step away and back.
+        TryPickupFloorItems();
+
         if (!frozen)
         {
             foreach (var enemy in _enemies)
@@ -219,6 +231,18 @@ public sealed class GameLoopController
         }
 
         TickHpRegen(deltaSec);
+    }
+
+    private void TryPickupFloorItems()
+    {
+        if (_floorItems.Count == 0) return;
+        var playerTile = _player.Position;
+        for (var i = _floorItems.Count - 1; i >= 0; i--)
+        {
+            if (_floorItems[i].Position != playerTile) continue;
+            _player.Inventory.Add(_floorItems[i].Item);
+            _floorItems.RemoveAt(i);
+        }
     }
 
     private void TickHpRegen(float deltaSec)
