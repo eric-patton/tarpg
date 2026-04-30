@@ -83,6 +83,15 @@ public static class TickRunner
         SimOutcome outcome = SimOutcome.Timeout;
         var ticks = 0;
 
+        // Position trace for timeout diagnostics — sample every 10 sim-seconds
+        // so a stuck-pilot run leaves a breadcrumb trail. Cleared earlier in
+        // the function (we can't tell from inside the loop whether the run
+        // will time out, so we always collect; only DumpTimeoutDiagnostic
+        // emits them on actual timeouts).
+        var trace = new List<(int Tick, Position Tile, int CombatTargetHp)>();
+        var traceEverySimSec = 1f;
+        var nextTraceAtSec = 0f;
+
         while (ticks < cfg.MaxTicks)
         {
             pilot.Tick(ctx);
@@ -109,8 +118,21 @@ public static class TickRunner
                 }
             }
 
+            var simSec = ticks * cfg.TickDeltaSec;
+            if (simSec >= nextTraceAtSec)
+            {
+                trace.Add((ticks, player.Position, combat.Target?.Health ?? -1));
+                nextTraceAtSec += traceEverySimSec;
+            }
+
             lastPlayerTile = player.Position;
             ticks++;
+        }
+
+        if (outcome == SimOutcome.Timeout)
+        {
+            DumpTimeoutDiagnostic(cfg, player, enemies, generated.BossAnchor, trace);
+            DumpNeighborhood(generated.Map, player.Position);
         }
 
         return new SimResult
@@ -207,6 +229,51 @@ public static class TickRunner
         ApplyFloorScaling(enemy, floor);
         enemies.Add(enemy);
         return true;
+    }
+
+    // Timeout diagnostic — emit player + threshold + alive-enemy positions
+    // so we can see where the pilot got stuck. Cheap to leave on always: a
+    // run that completes (cleared / died) takes this code path zero times.
+    private static void DumpTimeoutDiagnostic(
+        SimConfig cfg, Player player, List<Enemy> enemies, Position threshold,
+        List<(int Tick, Position Tile, int CombatTargetHp)> trace)
+    {
+        Console.WriteLine($"  # timeout-diag F{cfg.Floor} seed={cfg.Seed}: " +
+                          $"player=({player.Position.X},{player.Position.Y}) " +
+                          $"threshold=({threshold.X},{threshold.Y}) " +
+                          $"player-to-threshold-chebyshev={player.Position.ChebyshevTo(threshold)}");
+        Console.WriteLine($"  # alive enemies ({enemies.Count}):");
+        foreach (var e in enemies)
+        {
+            Console.WriteLine($"  #   {e.Definition.Id} at ({e.Position.X},{e.Position.Y}) " +
+                              $"hp={e.Health}/{e.MaxHealth} cheby-to-player={e.Position.ChebyshevTo(player.Position)}");
+        }
+        Console.WriteLine($"  # position trace ({trace.Count} samples):");
+        foreach (var t in trace)
+        {
+            Console.WriteLine($"  #   tick={t.Tick} player=({t.Tile.X},{t.Tile.Y}) target_hp={t.CombatTargetHp}");
+        }
+    }
+
+    // Print a 21x21 ASCII view of the map around `center` so a stuck-tile
+    // diagnostic can show what corridors / walls boxed the player in.
+    private static void DumpNeighborhood(Map map, Position center)
+    {
+        const int Half = 10;
+        Console.WriteLine($"  # {2*Half+1}x{2*Half+1} around ({center.X},{center.Y}) [@ = player tile, > = threshold]:");
+        for (var dy = -Half; dy <= Half; dy++)
+        {
+            var row = "  #   ";
+            for (var dx = -Half; dx <= Half; dx++)
+            {
+                var p = new Position(center.X + dx, center.Y + dy);
+                if (!map.InBounds(p)) { row += "?"; continue; }
+                if (dx == 0 && dy == 0) { row += "@"; continue; }
+                if (map[p].Type == TileTypes.Threshold) { row += ">"; continue; }
+                row += map.IsWalkable(p) ? "." : "#";
+            }
+            Console.WriteLine(row);
+        }
     }
 
     private static void ApplyFloorScaling(Enemy enemy, int floor)

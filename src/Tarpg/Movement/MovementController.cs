@@ -79,8 +79,16 @@ public sealed class MovementController
         var path = map.FindPath(startTile, endTile);
         if (path is null) return;
 
+        // Defensive: drop the start tile if it appears in the returned
+        // path. Map.FindPath already strips it, but if a future caller
+        // wires RogueSharp directly the duplicate-start would pin the
+        // player (Tick "arrives" at waypoints[0] = current cell every
+        // frame and never advances).
         foreach (var step in path)
+        {
+            if (step.X == startTile.X && step.Y == startTile.Y) continue;
             _waypoints.Enqueue(new Vector2(step.X + 0.5f, step.Y + 0.5f));
+        }
     }
 
     // cellAspect = glyphHeight / glyphWidth. The default IBM 8x16 font is 2.0;

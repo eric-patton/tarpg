@@ -11,16 +11,68 @@ namespace Tarpg.Sim;
 // within chebyshev-2. Walks toward the floor's threshold when no enemies
 // remain so the run terminates with PlayerCleared.
 //
+// Stuck detector: A* + wall-slide can leave the pilot's player parked
+// against a corner with combat target still alive but unreachable. After
+// StuckThresholdTicks of zero movement the pilot drops its target and
+// switches to "head for the threshold" mode permanently — if it can
+// reach the threshold the run ends as Cleared, otherwise the genuine
+// "this floor has unreachable enemies for this pilot" timeout fires.
+//
 // This is a "pressure-test" pilot — not optimal play. It exercises the
 // combat / AI / regen / skill systems end-to-end so we can tune enemies,
 // classes, items by aggregate outcome rather than first-principles math.
 public sealed class GreedySimPilot : ISimPilot
 {
+    // Player normally moves ~8 tiles/sim-sec; a tile transition fires every
+    // ~7 ticks at 60Hz. 60 ticks (1 sim-second) of zero tile-transitions is
+    // unambiguously stuck.
+    private const int StuckThresholdTicks = 60;
+
+    private bool _initialized;
+    private Position _lastPosition;
+    private int _ticksSinceMove;
+    private bool _bailingToThreshold;
+
     public void Tick(SimContext ctx)
     {
         var loop = ctx.Loop;
         var player = loop.Player;
         var enemies = loop.Enemies;
+
+        // Track tile-level movement for stuck detection. The tick where
+        // we initialize doesn't count toward the counter — otherwise the
+        // first tick falsely registers as "no movement."
+        if (_initialized)
+        {
+            if (player.Position != _lastPosition)
+            {
+                _ticksSinceMove = 0;
+                _bailingToThreshold = false; // re-engage if pilot is unstuck
+            }
+            else
+            {
+                _ticksSinceMove++;
+            }
+        }
+        _lastPosition = player.Position;
+        _initialized = true;
+
+        if (_ticksSinceMove >= StuckThresholdTicks)
+            _bailingToThreshold = true;
+
+        if (_bailingToThreshold)
+        {
+            // Drop combat + walk to threshold. If the floor is reachable,
+            // run ends as Cleared. If the threshold is also unreachable,
+            // the run hits MaxTicks and records as Timeout — which now
+            // means "genuinely couldn't navigate" instead of "pilot got
+            // stuck on one enemy."
+            if (loop.Combat.Target is not null) loop.Combat.Clear();
+            var threshold = ctx.FloorThreshold;
+            var goal = new Vector2(threshold.X + 0.5f, threshold.Y + 0.5f);
+            loop.Movement.RetargetTo(goal, player.ContinuousPosition, loop.Map);
+            return;
+        }
 
         // Drop dead-target combat refs — controller would clear next tick anyway.
         if (loop.Combat.Target is { IsDead: true })
@@ -38,9 +90,21 @@ public sealed class GreedySimPilot : ISimPilot
             return;
         }
 
-        // Re-target every tick so the pilot tracks the closest enemy as the
-        // fight evolves (the wolf in front died → switch to the next pack
-        // member without waiting for stale state to clear).
+        // Sticky targeting with hysteresis. Without this, two enemies at
+        // nearly-equal Euclidean distance cause the pilot to swap "nearest"
+        // every tick as the player jitters by 0.1 tile, which makes
+        // RetargetTo build conflicting paths (one north, one south) on
+        // alternating frames — net player motion is zero. With this gate
+        // we stick to the current target until it dies OR a candidate is
+        // at least 25% closer than the current pick.
+        if (loop.Combat.Target is Enemy current && !current.IsDead)
+        {
+            var currentDistSq = Vector2.DistanceSquared(player.ContinuousPosition, current.ContinuousPosition);
+            var nearestDistSq = Vector2.DistanceSquared(player.ContinuousPosition, nearest.ContinuousPosition);
+            if (nearestDistSq > currentDistSq * 0.75f)
+                nearest = current;
+        }
+
         if (!ReferenceEquals(loop.Combat.Target, nearest))
             loop.Combat.SetTarget(nearest);
 

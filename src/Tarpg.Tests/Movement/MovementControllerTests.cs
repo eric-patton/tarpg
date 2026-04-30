@@ -83,6 +83,47 @@ public class MovementControllerTests
     }
 
     [Fact]
+    public void RetargetTo_EveryFrameWithBlockedLos_StillMakesProgress()
+    {
+        // Regression for the every-frame-RetargetTo movement bug: in a
+        // narrow corridor where LOS to the target is blocked, A* runs and
+        // historically included the start tile as the first waypoint. With
+        // GameLoopController calling RetargetTo every frame, the player got
+        // pinned in their current tile (Tick "arrived" at waypoints[0]
+        // every frame and never advanced). Reproduced on Wolfwood F3
+        // seed=1009 in the sim baseline.
+        //
+        // Build a 1-wide corridor running south, with the target deep
+        // inside it so A* must produce a multi-step path. Player starts
+        // at the top.
+        var walls = new List<Position>();
+        for (var y = 1; y < 19; y++)
+        {
+            walls.Add(new Position(4, y)); // west wall
+            walls.Add(new Position(6, y)); // east wall
+        }
+        // Open the corridor's south end so A* has somewhere to go.
+        var map = TestMaps.OpenFloorWithWalls(20, 20, walls.ToArray());
+        var player = Player.Create(Reaver.Definition, new Position(5, 3));
+        var movement = new MovementController();
+
+        var target = new Vector2(5.5f, 17.5f); // 14 tiles south down the corridor
+        var startY = player.ContinuousPosition.Y;
+
+        // Mimic GameLoopController's combat-approach loop: RetargetTo + Tick
+        // every frame. With the bug, player.Y stays ~3.5 forever. With the
+        // fix, the player progresses south.
+        for (var i = 0; i < 200; i++)
+        {
+            movement.RetargetTo(target, player.ContinuousPosition, map);
+            movement.Tick(player, map, 0.05f, 1.0f);
+        }
+
+        Assert.True(player.ContinuousPosition.Y > startY + 5,
+            $"Expected progress > 5 tiles south; player y went from {startY} to {player.ContinuousPosition.Y}");
+    }
+
+    [Fact]
     public void Tick_WallSlides_DoesNotCrossSolidTile()
     {
         // Wall column at x=8 from y=1..18 with no gap. RetargetTo (10.5, 5.5)

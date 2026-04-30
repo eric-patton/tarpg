@@ -54,6 +54,9 @@ Content/bin/
 Content/obj/
 *.xnb
 
+## tarpg-sim sweep outputs — CSVs are local-only, regen via `sim --out`
+/runs/
+
 ## Local-only preprocessing source for the bundled square font.
 ## The build asset lives at src/Tarpg/Content/font_12x12.png; this root copy
 ## is the un-preprocessed Milazzo source kept around for re-runs of the
