@@ -58,10 +58,6 @@ public sealed class GameScreen : SadConsole.Console
     };
     private const int DefaultZoomIndex = 1; // 1.0x
 
-    // Player FOV radius in tiles. Will be replaced by ModifierContext.FieldOfViewRadius
-    // (currently 10.0f) once modifier-context plumbing reaches the renderer.
-    private const int FovRadius = 10;
-
     // Left-click finds the nearest live enemy within this radius (Euclidean
     // tiles) of the clicked cell. ARPG attacks read as "swing in a direction"
     // rather than precise single-target picks, so a generous radius makes
@@ -86,17 +82,6 @@ public sealed class GameScreen : SadConsole.Console
     private const int TopHudHeight = 1;
     private const int BottomHudHeight = StatusPanel.PanelHeight;
 
-    // Out-of-combat HP regen. Time-since-last-player-damage exceeds the delay,
-    // we add RegenPerSec HP/sec until full. Integer HP with float accumulator
-    // so fractional regen carries between frames cleanly.
-    private const float OutOfCombatRegenDelaySec = 3.0f;
-    private const float RegenPerSec = 5.0f;
-
-    // Resource gain on every successful auto-attack hit. Reaver flavor: "builds
-    // Rage from hits." Pairs with Cleave's Cost=10 so two landed swings buys
-    // one Cleave. Cleave's own hits don't grant resource (else infinite combo).
-    private const int ResourceGainPerAutoAttackHit = 5;
-
     // Skills that translate the caster (Charge today; future blink / leap)
     // get their snap converted into a quick lerp at this speed instead of a
     // single-frame teleport. Player normal walk is 8 t/s; dash is ~4× that
@@ -108,23 +93,21 @@ public sealed class GameScreen : SadConsole.Console
     private readonly Player _player;
     private readonly MovementController _movement = new();
     private readonly CombatController _combat = new();
+    private readonly GameLoopController _loop;
     private readonly SadEntityManager _entityManager;
     private readonly SadEntity _playerEntity;
     private readonly HitFeedback _hitFeedback;
     private readonly ClickIndicator _clickIndicator;
     private readonly ZoneDefinition _zone;
 
-    // Skill slot indices. The bottom-bar HUD renders these in array order, so
-    // M2 (right mouse) sits left of Q/W/E/R to mirror Diablo-style placement.
-    private const int SlotCount = 5;
-    private const int SlotIndexM2 = 0;
-    private const int SlotIndexQ = 1;
-    private const int SlotIndexW = 2;
-    private const int SlotIndexE = 3;
-    private const int SlotIndexR = 4;
-
-    private readonly SkillDefinition?[] _slotSkills = new SkillDefinition?[SlotCount];
-    private readonly float[] _slotCooldowns = new float[SlotCount];
+    // Skill slot index aliases — values come from GameLoopController so the
+    // bottom-bar HUD, input handling, and the loop's cooldown array all agree.
+    private const int SlotCount = GameLoopController.SlotCount;
+    private const int SlotIndexM2 = GameLoopController.SlotIndexM2;
+    private const int SlotIndexQ = GameLoopController.SlotIndexQ;
+    private const int SlotIndexW = GameLoopController.SlotIndexW;
+    private const int SlotIndexE = GameLoopController.SlotIndexE;
+    private const int SlotIndexR = GameLoopController.SlotIndexR;
 
     // World layer (gets pixel-shifted each frame for sub-cell camera panning)
     // and HUD overlay layers (never shifted; pinned to viewport top / bottom).
@@ -149,8 +132,6 @@ public sealed class GameScreen : SadConsole.Console
     private int _zoomIndex = DefaultZoomIndex;
     private int _lastScrollWheelValue;
     private int _currentFloor = 1;
-    private float _timeSinceLastDamage = OutOfCombatRegenDelaySec; // Start "out of combat" so the player's safe at floor entry.
-    private float _regenAccumulator;
 
     // Sentinel that doesn't match any in-bounds tile, so the first Update tick
     // forces a recompute even if the player hasn't moved yet.
@@ -170,8 +151,15 @@ public sealed class GameScreen : SadConsole.Console
     private float _dashTotalSec;
     private float _dashRemainingSec;
 
-    public GameScreen(int viewportWidth, int viewportHeight) : base(viewportWidth, viewportHeight)
+    // Single shared RNG drives floor seeds, weighted enemy picks, and
+    // (later) loot drops. Program.cs seeds from Environment.TickCount;
+    // tests / sim runners can pass an explicit seed for reproducibility.
+    private readonly Random _rng;
+
+    public GameScreen(int viewportWidth, int viewportHeight, Random? rng = null) : base(viewportWidth, viewportHeight)
     {
+        _rng = rng ?? new Random(Environment.TickCount);
+
         UseMouse = true;
         UseKeyboard = true;
         IsFocused = true;
@@ -225,20 +213,22 @@ public sealed class GameScreen : SadConsole.Console
         _statusPanel = new StatusPanel(_bottomHudConsole);
 
         _zone = Registries.Zones.Get("wolfwood");
-        _slotSkills[SlotIndexM2] = Registries.Skills.Get("heavy_strike");
-        _slotSkills[SlotIndexQ]  = Registries.Skills.Get("cleave");
-        _slotSkills[SlotIndexW]  = Registries.Skills.Get("charge");
-        _slotSkills[SlotIndexE]  = Registries.Skills.Get("war_cry");
-        _slotSkills[SlotIndexR]  = Registries.Skills.Get("whirlwind");
 
-        var seed = Environment.TickCount;
+        var seed = _rng.Next();
         System.Console.WriteLine($"[Tarpg] Generating {_zone.Name} F{_currentFloor} (seed {seed})");
         var floor = _zone.Generator.Generate(WorldWidth, WorldHeight, seed, _currentFloor);
 
         _map = floor.Map;
         _player = Player.Create(Reaver.Definition, floor.Entry);
 
-        _map.ComputeFovFor(_player.Position, FovRadius);
+        _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat);
+        _loop.SetSlotSkill(SlotIndexM2, Registries.Skills.Get("heavy_strike"));
+        _loop.SetSlotSkill(SlotIndexQ,  Registries.Skills.Get("cleave"));
+        _loop.SetSlotSkill(SlotIndexW,  Registries.Skills.Get("charge"));
+        _loop.SetSlotSkill(SlotIndexE,  Registries.Skills.Get("war_cry"));
+        _loop.SetSlotSkill(SlotIndexR,  Registries.Skills.Get("whirlwind"));
+
+        _map.ComputeFovFor(_player.Position, GameLoopController.FovRadius);
         _lastPlayerTile = _player.Position;
         _lastCursorCell = _player.Position;
 
@@ -343,79 +333,25 @@ public sealed class GameScreen : SadConsole.Console
         _enemyVisuals[enemy] = visual;
     }
 
-    // Slot activation: gate on slot's own cooldown + resource cost, then run
-    // the skill's behavior with a SkillContext snapshot of the current world.
-    // The behavior itself reads / writes via TakeDamage so HitFeedback's
-    // flash and damage numbers fire on each hit just like an auto-attack.
-    // Target = the cell the cursor was last seen over, so cursor-aimed
-    // skills (Heavy Strike, Charge) hit where the player is looking.
-    // Self-AOE skills (Cleave, Whirlwind, War Cry) ignore Target and use
-    // caster.Position.
-    //
-    // Post-execution position-change check covers teleport-style skills
-    // (Charge): if the player moved, clear the pending walk target and any
-    // attack-target so the dash isn't immediately undone by leftover state.
+    // Slot activation: delegates to the loop controller for the
+    // gate-and-execute, then converts a teleport snap (Charge) into a brief
+    // animated lerp from PreCastPosition to PostCastPosition. The lerp lives
+    // on the UI side because it's purely visual — sim runs leave the player
+    // at the snapped position immediately.
     private void TryActivateSlot(int index)
     {
-        var def = _slotSkills[index];
-        if (def is null) return;
-        if (_slotCooldowns[index] > 0f) return;
-        if (_player.Resource < def.Cost) return;
+        var result = _loop.TryCastSkill(index, _lastCursorCell, _skillVfx);
+        if (!result.Success || !result.Teleported) return;
 
-        var prePos = _player.ContinuousPosition;
-        var ctx = new SkillContext
-        {
-            Caster = _player,
-            Target = _lastCursorCell,
-            Map = _map,
-            Hostiles = _enemies.Cast<Entity>().ToList(),
-            Vfx = _skillVfx,
-        };
-        def.Behavior.Execute(ctx);
-        _player.Resource -= def.Cost;
-        _slotCooldowns[index] = def.CooldownSec;
+        _movement.Stop();
+        _combat.Clear();
 
-        if (_player.ContinuousPosition != prePos)
-        {
-            // Skill translated the caster (Charge etc.). Drop the
-            // pending walk + attack target so the dash isn't undone by
-            // leftover state, then convert the would-be teleport into a
-            // brief animated lerp from prePos to where the skill landed.
-            _movement.Stop();
-            _combat.Clear();
-
-            var dashEnd = _player.ContinuousPosition;
-            _player.ContinuousPosition = prePos;
-            _dashStart = prePos;
-            _dashEnd = dashEnd;
-            var distance = Vector2.Distance(prePos, dashEnd);
-            _dashTotalSec = distance / DashTilesPerSec;
-            _dashRemainingSec = _dashTotalSec;
-        }
-    }
-
-    private void GrantResourceOnHit()
-    {
-        _player.Resource = Math.Min(
-            _player.MaxResource,
-            _player.Resource + ResourceGainPerAutoAttackHit);
-    }
-
-    // Out-of-combat HP regen: once OutOfCombatRegenDelaySec has passed since
-    // the last damage tick, accumulate fractional HP at RegenPerSec and apply
-    // whole HP each frame. The accumulator preserves fractional progress
-    // across frames so the regen feels smooth at the per-tick scale.
-    private void TickHpRegen(float deltaSec)
-    {
-        _timeSinceLastDamage += deltaSec;
-        if (_timeSinceLastDamage < OutOfCombatRegenDelaySec) return;
-        if (_player.Health >= _player.MaxHealth) { _regenAccumulator = 0f; return; }
-
-        _regenAccumulator += deltaSec * RegenPerSec;
-        var heal = (int)_regenAccumulator;
-        if (heal <= 0) return;
-        _regenAccumulator -= heal;
-        _player.Health = Math.Min(_player.MaxHealth, _player.Health + heal);
+        _player.ContinuousPosition = result.PreCastPosition;
+        _dashStart = result.PreCastPosition;
+        _dashEnd = result.PostCastPosition;
+        var distance = Vector2.Distance(_dashStart, _dashEnd);
+        _dashTotalSec = distance / DashTilesPerSec;
+        _dashRemainingSec = _dashTotalSec;
     }
 
     // Bump HP and Damage on a freshly-created enemy based on _currentFloor.
@@ -434,13 +370,11 @@ public sealed class GameScreen : SadConsole.Console
     }
 
     // Damage / death event handlers shared by both player and enemy entities.
-    // Routes to HitFeedback for the visual + hit-stop response.
+    // Routes to HitFeedback for the visual + hit-stop response. The loop
+    // controller subscribes to _player.Damaged separately for its regen
+    // timer, so this handler only owns the UI-side response.
     private void OnEntityDamaged(Entity entity, int amount)
     {
-        // Reset the regen timer whenever the player takes damage — keeps the
-        // "out of combat" gate honest. Enemy damage doesn't reset anything.
-        if (entity is Player) _timeSinceLastDamage = 0f;
-
         // Red on player so the "you got hit" cue is unmistakable; warm yellow
         // on enemies for "you landed a swing" feedback.
         var color = entity is Player
@@ -483,28 +417,25 @@ public sealed class GameScreen : SadConsole.Console
             _entityManager.Remove(visual);
         _enemies.Clear();
         _enemyVisuals.Clear();
-        _combat.Clear();
-        _movement.Stop();
 
-        // Skill / regen state resets on every load. Rage is restored on
-        // death (a "fresh start" from the previous floor); descent leaves it
-        // alone so a saved-up resource pool carries through to the new fight.
-        Array.Clear(_slotCooldowns, 0, _slotCooldowns.Length);
-        _regenAccumulator = 0f;
-        _timeSinceLastDamage = OutOfCombatRegenDelaySec;
         _dashRemainingSec = 0f;
-        if (restoreFullHealth) _player.Resource = 0;
 
-        var seed = Environment.TickCount;
+        var seed = _rng.Next();
         System.Console.WriteLine(
             $"[Tarpg] {reason}: loading {_zone.Name} F{_currentFloor} (seed {seed})");
         var floor = _zone.Generator.Generate(WorldWidth, WorldHeight, seed, _currentFloor);
 
         _map = floor.Map;
+        _loop.Map = _map;
         _player.SetTile(floor.Entry);
         if (restoreFullHealth) _player.Health = _player.MaxHealth;
 
-        _map.ComputeFovFor(_player.Position, FovRadius);
+        // Loop owns combat / movement / cooldown / regen reset.
+        // Rage is wiped on death (fresh start); descent preserves the saved
+        // pool so a built-up resource carries to the next fight.
+        _loop.OnFloorLoaded(restoreFullHealth);
+
+        _map.ComputeFovFor(_player.Position, GameLoopController.FovRadius);
         _lastPlayerTile = _player.Position;
         _lastCursorCell = _player.Position;
 
@@ -530,7 +461,7 @@ public sealed class GameScreen : SadConsole.Console
             throw new InvalidOperationException(
                 $"No spawnable enemies registered for zone '{_zone.Id}'.");
 
-        var pick = Random.Shared.Next(totalWeight);
+        var pick = _rng.Next(totalWeight);
         foreach (var def in Registries.Enemies.All)
         {
             if (!def.ZoneIds.Contains(_zone.Id)) continue;
@@ -572,68 +503,23 @@ public sealed class GameScreen : SadConsole.Console
         // walk-target halfway through the animation.
         var frozen = _hitFeedback.HitStopRemaining > 0f || _dashRemainingSec > 0f;
 
-        if (!frozen)
-        {
-            if (_combat.IsTargetAlive)
-            {
-                var target = _combat.Target!;
-                var distance = Vector2.Distance(_player.ContinuousPosition, target.ContinuousPosition);
-
-                if (!_combat.ForceStand && distance > CombatController.MeleeRange)
-                {
-                    // Approach the target. Re-target every frame so the player
-                    // tracks the enemy if it moves.
-                    _movement.RetargetTo(target.ContinuousPosition, _player.ContinuousPosition, _map);
-                    _movement.Tick(_player, _map, deltaSec, cellAspect);
-                }
-                else
-                {
-                    // Either in range, or shift+click force-stand. Stop moving and try to swing.
-                    _movement.Stop();
-                    if (_combat.TryAttack(_player, deltaSec))
-                        GrantResourceOnHit();
-                }
-            }
-            else
-            {
-                // No combat target — pure movement input.
-                _movement.Tick(_player, _map, deltaSec, cellAspect);
-            }
-        }
+        var lastTile = _lastPlayerTile;
+        _loop.Tick(deltaSec, cellAspect, frozen, lastTile);
 
         ReapDead();
 
-        // Tile transition: handle descent-on-Threshold first (Descend swaps
-        // _map, recomputes FOV at the new entry, and resets _lastPlayerTile).
-        // Otherwise just refresh FOV at the new tile.
-        if (_player.Position != _lastPlayerTile)
-        {
-            if (_map[_player.Position].Type == TileTypes.Threshold)
-            {
-                Descend();
-            }
-            else
-            {
-                _map.ComputeFovFor(_player.Position, FovRadius);
-                _lastPlayerTile = _player.Position;
-            }
-        }
+        // React to the controller's tile-transition signals. Descent fully
+        // reloads the floor (which resets _lastPlayerTile inside LoadFloor).
+        // Otherwise FOV was already recomputed inside Tick at the new tile,
+        // so we just track it here.
+        if (_loop.SteppedOnThreshold)
+            Descend();
+        else if (_player.Position != lastTile)
+            _lastPlayerTile = _player.Position;
 
-        // Each live enemy's AI decides chase / attack / idle for this frame.
-        // Skipped during hit-stop so attacks and chase pause on impact.
-        if (!frozen)
-        {
-            foreach (var enemy in _enemies)
-            {
-                if (enemy.IsDead) continue;
-                enemy.Ai.Tick(enemy, _player, _map, deltaSec, cellAspect);
-            }
-        }
-
-        // If the AIs collectively killed the player this frame, regenerate
-        // the floor and respawn at full HP. Real corpse-run / XP-loss death
-        // is deferred per docs/STATUS.md.
-        if (_player.IsDead)
+        // Death regen: real corpse-run / XP-loss death is deferred per
+        // docs/STATUS.md; today we just regenerate the floor at full HP.
+        if (_loop.PlayerDied)
             RegenerateAfterDeath();
 
         // Effects always tick (so the hit-stop timer counts down even while
@@ -642,16 +528,6 @@ public sealed class GameScreen : SadConsole.Console
         _hitFeedback.Tick(deltaSec, FontSize);
         _clickIndicator.Tick(deltaSec, FontSize);
         _skillVfx.Tick(deltaSec);
-
-        // Per-slot skill cooldowns decay in real time, including across
-        // hit-stop — matches how cooldowns work in Diablo-style ARPGs.
-        for (var i = 0; i < SlotCount; i++)
-        {
-            if (_slotCooldowns[i] > 0f)
-                _slotCooldowns[i] = MathF.Max(0f, _slotCooldowns[i] - deltaSec);
-        }
-
-        TickHpRegen(deltaSec);
 
         UpdateCamera();
         DrawMap();
@@ -916,13 +792,15 @@ public sealed class GameScreen : SadConsole.Console
         // resource orb. Slots and consumables that aren't filled in yet
         // render as dim placeholders so the player learns the bar layout
         // before content lands in those positions.
+        var loopSlots = _loop.Slots;
+        var loopCooldowns = _loop.Cooldowns;
         var slots = new[]
         {
-            new SkillSlot("M2", _slotSkills[SlotIndexM2], _slotCooldowns[SlotIndexM2]),
-            new SkillSlot("Q",  _slotSkills[SlotIndexQ],  _slotCooldowns[SlotIndexQ]),
-            new SkillSlot("W",  _slotSkills[SlotIndexW],  _slotCooldowns[SlotIndexW]),
-            new SkillSlot("E",  _slotSkills[SlotIndexE],  _slotCooldowns[SlotIndexE]),
-            new SkillSlot("R",  _slotSkills[SlotIndexR],  _slotCooldowns[SlotIndexR]),
+            new SkillSlot("M2", loopSlots[SlotIndexM2], loopCooldowns[SlotIndexM2]),
+            new SkillSlot("Q",  loopSlots[SlotIndexQ],  loopCooldowns[SlotIndexQ]),
+            new SkillSlot("W",  loopSlots[SlotIndexW],  loopCooldowns[SlotIndexW]),
+            new SkillSlot("E",  loopSlots[SlotIndexE],  loopCooldowns[SlotIndexE]),
+            new SkillSlot("R",  loopSlots[SlotIndexR],  loopCooldowns[SlotIndexR]),
         };
         var hpPotion = new ConsumableSlot("1", '!', Count: 0);
         var resourcePotion = new ConsumableSlot("2", '!', Count: 0);

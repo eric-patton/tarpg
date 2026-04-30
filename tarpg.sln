@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tarpg", "src\Tarpg\Tarpg.cs
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tarpg.Tests", "src\Tarpg.Tests\Tarpg.Tests.csproj", "{4D11D01C-6E54-456F-A1F5-05CC3BE09728}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Tarpg.Sim", "src\Tarpg.Sim\Tarpg.Sim.csproj", "{431556E7-5FF1-4DA0-B99B-CC5F7351C321}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,9 +28,14 @@ Global
 		{4D11D01C-6E54-456F-A1F5-05CC3BE09728}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4D11D01C-6E54-456F-A1F5-05CC3BE09728}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4D11D01C-6E54-456F-A1F5-05CC3BE09728}.Release|Any CPU.Build.0 = Release|Any CPU
+		{431556E7-5FF1-4DA0-B99B-CC5F7351C321}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{431556E7-5FF1-4DA0-B99B-CC5F7351C321}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{431556E7-5FF1-4DA0-B99B-CC5F7351C321}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{431556E7-5FF1-4DA0-B99B-CC5F7351C321}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{47F854EC-1250-44FA-890B-034E16E76FB8} = {5D35384D-340F-4AC1-BC3A-FA24F7D62A0F}
 		{4D11D01C-6E54-456F-A1F5-05CC3BE09728} = {5D35384D-340F-4AC1-BC3A-FA24F7D62A0F}
+		{431556E7-5FF1-4DA0-B99B-CC5F7351C321} = {5D35384D-340F-4AC1-BC3A-FA24F7D62A0F}
 	EndGlobalSection
 EndGlobal
