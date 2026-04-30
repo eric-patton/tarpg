@@ -17,14 +17,20 @@ namespace Tarpg.Enemies.Ai;
 public sealed class MeleeChargerAi : IEnemyAi
 {
     private const float AggroMemorySec = 3.0f;
-    private const float AttackCooldownSec = 0.8f;
     private const float MeleeRange = 1.4f;
 
-    private readonly MovementController _movement = new();
+    private readonly MovementController _movement;
+    private readonly float _attackCooldownSec;
     private float _aggroRemaining;
     private Vector2 _lastSeenPlayerPos;
     private bool _hasMemory;
     private float _attackCooldown;
+
+    public MeleeChargerAi(EnemyDefinition def)
+    {
+        _movement = new MovementController(def.MoveSpeed);
+        _attackCooldownSec = def.AttackCooldown;
+    }
 
     public void Tick(Enemy self, Player player, Map map, float deltaSec, float cellAspect)
     {
@@ -65,8 +71,8 @@ public sealed class MeleeChargerAi : IEnemyAi
         _movement.Stop();
         if (_attackCooldown <= 0f && map.IsInFov(self.Position))
         {
-            player.TakeDamage(self.Definition.BaseDamage);
-            _attackCooldown = AttackCooldownSec;
+            player.TakeDamage(self.Damage);
+            _attackCooldown = _attackCooldownSec;
         }
     }
 }

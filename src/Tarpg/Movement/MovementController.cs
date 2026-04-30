@@ -15,7 +15,16 @@ namespace Tarpg.Movement;
 //  - Resolve wall collision via axis-separated tile checks (slide along walls).
 public sealed class MovementController
 {
-    public const float TilesPerSecond = 8f;
+    // Player baseline. Enemies override per-EnemyDefinition.MoveSpeed via
+    // their AI's constructor.
+    public const float DefaultTilesPerSecond = 8f;
+
+    private readonly float _tilesPerSecond;
+
+    public MovementController(float tilesPerSecond = DefaultTilesPerSecond)
+    {
+        _tilesPerSecond = tilesPerSecond;
+    }
 
     // How close (in tiles) we need to be to a waypoint to consider it reached.
     private const float WaypointArriveDistance = 0.15f;
@@ -52,18 +61,23 @@ public sealed class MovementController
         var startTile = new Position((int)MathF.Floor(currentPos.X), (int)MathF.Floor(currentPos.Y));
         var endTile = new Position((int)MathF.Floor(worldTarget.X), (int)MathF.Floor(worldTarget.Y));
 
-        // If the click landed on a wall, route to the closest walkable tile we
-        // can reach. Cheap version: if endTile is unwalkable, try the four
-        // neighbors. If none are reachable, give up.
+        // If the click landed on a wall, route to the closest walkable tile
+        // we can reach. Cheap version: if endTile is unwalkable, try the four
+        // neighbors. If none are reachable (clicked deep inside a wall block,
+        // or out of bounds), keep _finalTarget set so the entity drifts
+        // straight at the cursor — collision sliding handles the wall, and
+        // the player just walks "in that direction" instead of doing nothing.
         if (!map.IsWalkable(endTile))
         {
             var fallback = FindWalkableNeighbor(map, endTile);
-            if (fallback is null) { _finalTarget = null; return; }
+            if (fallback is null) return;
             endTile = fallback.Value;
         }
 
+        // A* may still fail if the target is in a disconnected region; same
+        // fallback applies — drift toward the click.
         var path = map.FindPath(startTile, endTile);
-        if (path is null) { _finalTarget = null; return; }
+        if (path is null) return;
 
         foreach (var step in path)
             _waypoints.Enqueue(new Vector2(step.X + 0.5f, step.Y + 0.5f));
@@ -108,7 +122,7 @@ public sealed class MovementController
         var correctedDistance = MathF.Sqrt(dx * dx + dy * dy * cellAspect * cellAspect);
         if (correctedDistance < float.Epsilon) return;
 
-        var step = new Vector2(dx, dy) / correctedDistance * TilesPerSecond * deltaSec;
+        var step = new Vector2(dx, dy) / correctedDistance * _tilesPerSecond * deltaSec;
 
         // Don't overshoot the goal in a single frame.
         if (step.LengthSquared() > distance * distance)

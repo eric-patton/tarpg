@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Numerics;
 using SadConsole;
 using SadConsole.Input;
@@ -8,6 +9,7 @@ using Tarpg.Core;
 using Tarpg.Enemies;
 using Tarpg.Entities;
 using Tarpg.Movement;
+using Tarpg.Skills;
 using Tarpg.UI.Effects;
 using Tarpg.World;
 using SadEntity = SadConsole.Entities.Entity;
@@ -15,15 +17,31 @@ using SadEntityManager = SadConsole.Entities.EntityManager;
 
 namespace Tarpg.UI;
 
-// Game screen orchestrator. On construction, asks the configured zone
-// (currently "wolfwood") for a freshly generated floor, spawns the player
-// at its entry tile and wolves at its enemy spawn points, then drives the
-// per-tick movement / combat / FOV / render loop. Tiles redraw each tick
-// with FOV-aware visibility (full / dim / hidden). Player and enemies are
-// SadConsole Entities with pixel positioning, driven by MovementController
-// (continuous) and CombatController (auto-attack melee).
+// Game screen orchestrator. Three-layer rendering:
+//   - GameScreen itself: viewport-sized, owns input + acts as the parent
+//     surface (its own cells are unused — children cover it).
+//   - _worldConsole: world-sized backing surface (WorldWidth × WorldHeight)
+//     with pixel-positioning enabled. Each frame UpdateCamera adjusts
+//     `_worldConsole.Surface.View` to viewport+1 cells of the world AND
+//     `_worldConsole.Position` by the sub-cell pixel remainder, so the
+//     camera pans smoothly between cells instead of snapping a full cell
+//     at every tile boundary.
+//   - _hudConsole: viewport-aligned single row, no pixel shift, added last
+//     so it draws on top of the world. The HUD stays glued to screen y=0
+//     while the world slides underneath.
+//
+// On construction asks the configured zone for a generated floor, spawns
+// the player at its entry tile and wolves at its enemy spawn points, then
+// drives the per-tick movement / combat / FOV / render / camera loop.
+// Walking onto a Threshold tile triggers descent to the next floor; dying
+// triggers a same-floor regen at full HP (placeholder until corpse-run).
 public sealed class GameScreen : SadConsole.Console
 {
+    // World is bigger than the viewport so the camera has somewhere to scroll.
+    // BSP min-leaf gates (12x8) leave room for plenty of subdivisions at 160x60.
+    private const int WorldWidth = 160;
+    private const int WorldHeight = 60;
+
     // Mode toggle lives in Tarpg.Core.RenderSettings so Program.cs (font
     // loader) and this file stay in sync. See RenderSettings for what each
     // mode does.
@@ -44,7 +62,48 @@ public sealed class GameScreen : SadConsole.Console
     // (currently 10.0f) once modifier-context plumbing reaches the renderer.
     private const int FovRadius = 10;
 
-    // Not readonly — RegenerateFloor swaps in a fresh Map on player death.
+    // Left-click finds the nearest live enemy within this radius (Euclidean
+    // tiles) of the clicked cell. ARPG attacks read as "swing in a direction"
+    // rather than precise single-target picks, so a generous radius makes
+    // clicking into a clump still feel responsive without forcing pixel-aim.
+    private const float ClickTargetRadius = 1.5f;
+
+    // Per-floor stat scaling. Floor N applies multipliers to BaseHealth and
+    // BaseDamage of every spawned enemy: HP × (1 + HpScalePerFloor·(N−1)),
+    // Dmg × (1 + DmgScalePerFloor·(N−1)). HP scales faster than damage so
+    // deeper floors feel like grindier fights instead of one-shot brutality.
+    private const float HpScalePerFloor = 0.15f;
+    private const float DmgScalePerFloor = 0.10f;
+
+    // Pack spawn fans out in chebyshev rings around the BSP-chosen center.
+    // Capped at this radius so a horde with PackSize=10 doesn't sprawl across
+    // a whole room when only the immediate neighborhood is walkable.
+    private const int PackSpreadRadiusMax = 3;
+
+    // Viewport rows reserved by HUD layers — the world camera centers the
+    // player in the visible region between them so the player isn't covered
+    // by an overlay in normal play.
+    private const int TopHudHeight = 1;
+    private const int BottomHudHeight = StatusPanel.PanelHeight;
+
+    // Out-of-combat HP regen. Time-since-last-player-damage exceeds the delay,
+    // we add RegenPerSec HP/sec until full. Integer HP with float accumulator
+    // so fractional regen carries between frames cleanly.
+    private const float OutOfCombatRegenDelaySec = 3.0f;
+    private const float RegenPerSec = 5.0f;
+
+    // Resource gain on every successful auto-attack hit. Reaver flavor: "builds
+    // Rage from hits." Pairs with Cleave's Cost=10 so two landed swings buys
+    // one Cleave. Cleave's own hits don't grant resource (else infinite combo).
+    private const int ResourceGainPerAutoAttackHit = 5;
+
+    // Skills that translate the caster (Charge today; future blink / leap)
+    // get their snap converted into a quick lerp at this speed instead of a
+    // single-frame teleport. Player normal walk is 8 t/s; dash is ~4× that
+    // so it reads as fast-but-visible rather than instantaneous.
+    private const float DashTilesPerSec = 30f;
+
+    // Not readonly — LoadFloor swaps in a fresh Map on descent / death.
     private Map _map;
     private readonly Player _player;
     private readonly MovementController _movement = new();
@@ -52,48 +111,153 @@ public sealed class GameScreen : SadConsole.Console
     private readonly SadEntityManager _entityManager;
     private readonly SadEntity _playerEntity;
     private readonly HitFeedback _hitFeedback;
+    private readonly ClickIndicator _clickIndicator;
+    private readonly ZoneDefinition _zone;
+
+    // Skill slot indices. The bottom-bar HUD renders these in array order, so
+    // M2 (right mouse) sits left of Q/W/E/R to mirror Diablo-style placement.
+    private const int SlotCount = 5;
+    private const int SlotIndexM2 = 0;
+    private const int SlotIndexQ = 1;
+    private const int SlotIndexW = 2;
+    private const int SlotIndexE = 3;
+    private const int SlotIndexR = 4;
+
+    private readonly SkillDefinition?[] _slotSkills = new SkillDefinition?[SlotCount];
+    private readonly float[] _slotCooldowns = new float[SlotCount];
+
+    // World layer (gets pixel-shifted each frame for sub-cell camera panning)
+    // and HUD overlay layers (never shifted; pinned to viewport top / bottom).
+    // _flashOverlay sits between world and HUD so screen-flash effects tint
+    // the playfield without dimming the bars.
+    private readonly SadConsole.Console _worldConsole;
+    private readonly SadConsole.Console _flashOverlay;
+    private readonly SadConsole.Console _hudConsole;
+    private readonly SadConsole.Console _bottomHudConsole;
+    private readonly StatusPanel _statusPanel;
+    private readonly SkillVfx _skillVfx;
+
+    private readonly int _viewportCellsW;
+    private readonly int _viewportCellsH;
 
     private readonly List<Enemy> _enemies = new();
     private readonly Dictionary<Enemy, SadEntity> _enemyVisuals = new();
 
     private bool _shiftHeld;
+    private bool _wasLeftButtonDown;
+    private bool _wasRightButtonDown;
     private int _zoomIndex = DefaultZoomIndex;
     private int _lastScrollWheelValue;
+    private int _currentFloor = 1;
+    private float _timeSinceLastDamage = OutOfCombatRegenDelaySec; // Start "out of combat" so the player's safe at floor entry.
+    private float _regenAccumulator;
 
     // Sentinel that doesn't match any in-bounds tile, so the first Update tick
     // forces a recompute even if the player hasn't moved yet.
     private Position _lastPlayerTile = new(-1, -1);
 
-    public GameScreen(int width, int height) : base(width, height)
+    // Last cell the cursor hovered over (in world tile coords). Cursor-aimed
+    // skills (Heavy Strike at the cursor cell, Charge dashing toward it) read
+    // this as their SkillContext.Target. Updated in ProcessMouse on any mouse
+    // event; falls back to the player's tile when nothing has moved yet.
+    private Position _lastCursorCell;
+
+    // Active dash animation. _dashRemainingSec > 0 means the player is being
+    // tweened from _dashStart toward _dashEnd; gates input + AI ticks via
+    // the same `frozen` flag the hit-stop pause uses.
+    private Vector2 _dashStart;
+    private Vector2 _dashEnd;
+    private float _dashTotalSec;
+    private float _dashRemainingSec;
+
+    public GameScreen(int viewportWidth, int viewportHeight) : base(viewportWidth, viewportHeight)
     {
         UseMouse = true;
         UseKeyboard = true;
         IsFocused = true;
         FocusOnMouseClick = true;
 
-        var zone = Registries.Zones.Get("wolfwood");
+        _viewportCellsW = viewportWidth;
+        _viewportCellsH = viewportHeight;
+
+        // World layer: oversized surface, pixel-positioning so we can pan
+        // by sub-cell pixel amounts. UseMouse=false so input bubbles up to
+        // GameScreen for routing. View width is viewport+1 to keep a buffer
+        // cell on the right/bottom edges — partial cells render there as
+        // the camera pans between integer cell positions.
+        _worldConsole = new SadConsole.Console(WorldWidth, WorldHeight)
+        {
+            UsePixelPositioning = true,
+            UseMouse = false,
+        };
+        _worldConsole.Surface.View = new Rectangle(0, 0, viewportWidth + 1, viewportHeight + 1);
+        Children.Add(_worldConsole);
+
+        // Flash overlay: full-viewport child between world and HUD so the
+        // screen-flash VFX tints the playfield without affecting the bars.
+        // Cells start transparent; SkillVfx paints / clears them on demand.
+        _flashOverlay = new SadConsole.Console(viewportWidth, viewportHeight)
+        {
+            UseMouse = false,
+        };
+        for (var y = 0; y < viewportHeight; y++)
+        for (var x = 0; x < viewportWidth; x++)
+            _flashOverlay.Surface.SetGlyph(x, y, ' ', Color.Transparent, Color.Transparent);
+        Children.Add(_flashOverlay);
+
+        // Top HUD layer: viewport-aligned single row, no shifts. Added AFTER
+        // the world (and flash overlay) so it draws on top of viewport row 0.
+        _hudConsole = new SadConsole.Console(viewportWidth, TopHudHeight)
+        {
+            UseMouse = false,
+        };
+        Children.Add(_hudConsole);
+
+        // Bottom HUD layer: status panel pinned to the bottom of the viewport.
+        // Cell-positioned at (0, viewportHeight - BottomHudHeight) so it
+        // covers the bottom rows independently of the world's pixel shift.
+        _bottomHudConsole = new SadConsole.Console(viewportWidth, BottomHudHeight)
+        {
+            UseMouse = false,
+            Position = new Point(0, viewportHeight - BottomHudHeight),
+        };
+        Children.Add(_bottomHudConsole);
+        _statusPanel = new StatusPanel(_bottomHudConsole);
+
+        _zone = Registries.Zones.Get("wolfwood");
+        _slotSkills[SlotIndexM2] = Registries.Skills.Get("heavy_strike");
+        _slotSkills[SlotIndexQ]  = Registries.Skills.Get("cleave");
+        _slotSkills[SlotIndexW]  = Registries.Skills.Get("charge");
+        _slotSkills[SlotIndexE]  = Registries.Skills.Get("war_cry");
+        _slotSkills[SlotIndexR]  = Registries.Skills.Get("whirlwind");
+
         var seed = Environment.TickCount;
-        System.Console.WriteLine($"[Tarpg] Generating {zone.Name} (seed {seed})");
-        var floor = zone.Generator.Generate(width, height, seed);
+        System.Console.WriteLine($"[Tarpg] Generating {_zone.Name} F{_currentFloor} (seed {seed})");
+        var floor = _zone.Generator.Generate(WorldWidth, WorldHeight, seed, _currentFloor);
 
         _map = floor.Map;
         _player = Player.Create(Reaver.Definition, floor.Entry);
 
-        // Seed FOV before the first paint so the initial frame already reflects
-        // visibility instead of flashing as fully revealed.
         _map.ComputeFovFor(_player.Position, FovRadius);
         _lastPlayerTile = _player.Position;
+        _lastCursorCell = _player.Position;
 
-        DrawMap();
-
+        // Effect subsystems must be constructed before the first UpdateCamera
+        // call below, since UpdateCamera reads SkillVfx.GetShakeOffsetPx().
+        // Entities live on the world layer so they pan with it.
         _entityManager = new SadEntityManager();
-        SadComponents.Add(_entityManager);
+        _worldConsole.SadComponents.Add(_entityManager);
 
         _hitFeedback = new HitFeedback(_entityManager);
+        _clickIndicator = new ClickIndicator(_entityManager);
+        _skillVfx = new SkillVfx(_worldConsole.Surface, _flashOverlay.Surface);
+
+        UpdateCamera();
+        DrawMap();
 
         // Player events are hooked once for the lifetime of this GameScreen
-        // (RegenerateFloor reuses the same Player instance, so subscriptions
-        // survive death + respawn).
+        // (LoadFloor reuses the same Player instance, so subscriptions
+        // survive descent + death respawn).
         _player.Damaged += OnEntityDamaged;
         _player.Died += OnEntityDied;
 
@@ -103,24 +267,71 @@ public sealed class GameScreen : SadConsole.Console
         };
         _entityManager.Add(_playerEntity);
 
-        // Hardcoded to Wolf for v0; later: roll over Registries.Enemies.All
-        // filtered by ZoneIds.Contains(zone.Id) with RarityWeight.
         foreach (var spawn in floor.EnemySpawnPoints)
-            SpawnEnemy(Wolf.Definition, spawn);
+            SpawnPack(PickEnemyForZone(), spawn);
 
-        // Apply the configured base font size (and resize window once to match).
-        // No-op if UseSquareCells is false and we're already at native 8x16.
+        // Apply the configured base font size to all consoles, then size
+        // the OS window to the viewport (NOT the world surface).
         FontSize = BaseFontSize;
-        Game.Instance.ResizeWindow(Surface.Width, Surface.Height, BaseFontSize, true);
+        _worldConsole.FontSize = BaseFontSize;
+        _flashOverlay.FontSize = BaseFontSize;
+        _hudConsole.FontSize = BaseFontSize;
+        _bottomHudConsole.FontSize = BaseFontSize;
+        Game.Instance.ResizeWindow(_viewportCellsW, _viewportCellsH, BaseFontSize, true);
 
         SyncPlayerVisual();
         SyncEnemyVisuals();
         DrawHud();
     }
 
+    // Place PackSize copies of `def` around `center`. Filling order: center
+    // first, then chebyshev ring 1, then ring 2, up to PackSpreadRadiusMax.
+    // Skips non-walkable / already-occupied tiles. If the spread can't fit
+    // PackSize copies (tight room, neighbors blocked), we just spawn fewer —
+    // BSP rooms are big enough that it's a non-issue at PackSize ≤ ~6.
+    private void SpawnPack(EnemyDefinition def, Position center)
+    {
+        var occupied = new HashSet<Position> { _player.Position };
+        foreach (var enemy in _enemies)
+            occupied.Add(enemy.Position);
+
+        var packSize = Math.Max(1, def.PackSize);
+        var placed = 0;
+
+        if (TryPlaceAt(def, center, occupied))
+        {
+            occupied.Add(center);
+            placed++;
+        }
+
+        for (var radius = 1; placed < packSize && radius <= PackSpreadRadiusMax; radius++)
+        {
+            for (var dy = -radius; dy <= radius && placed < packSize; dy++)
+            for (var dx = -radius; dx <= radius && placed < packSize; dx++)
+            {
+                // Walk only the ring perimeter — interior cells were filled
+                // by earlier (smaller) radius iterations.
+                if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != radius) continue;
+                var p = new Position(center.X + dx, center.Y + dy);
+                if (!TryPlaceAt(def, p, occupied)) continue;
+                occupied.Add(p);
+                placed++;
+            }
+        }
+    }
+
+    private bool TryPlaceAt(EnemyDefinition def, Position p, HashSet<Position> occupied)
+    {
+        if (!_map.IsWalkable(p)) return false;
+        if (occupied.Contains(p)) return false;
+        SpawnEnemy(def, p);
+        return true;
+    }
+
     private void SpawnEnemy(EnemyDefinition def, Position spawnTile)
     {
         var enemy = Enemy.Create(def, spawnTile);
+        ApplyFloorScaling(enemy);
         enemy.Damaged += OnEntityDamaged;
         enemy.Died += OnEntityDied;
         var visual = new SadEntity(enemy.Color, Color.Black, enemy.Glyph, zIndex: enemy.RenderLayer)
@@ -132,10 +343,104 @@ public sealed class GameScreen : SadConsole.Console
         _enemyVisuals[enemy] = visual;
     }
 
+    // Slot activation: gate on slot's own cooldown + resource cost, then run
+    // the skill's behavior with a SkillContext snapshot of the current world.
+    // The behavior itself reads / writes via TakeDamage so HitFeedback's
+    // flash and damage numbers fire on each hit just like an auto-attack.
+    // Target = the cell the cursor was last seen over, so cursor-aimed
+    // skills (Heavy Strike, Charge) hit where the player is looking.
+    // Self-AOE skills (Cleave, Whirlwind, War Cry) ignore Target and use
+    // caster.Position.
+    //
+    // Post-execution position-change check covers teleport-style skills
+    // (Charge): if the player moved, clear the pending walk target and any
+    // attack-target so the dash isn't immediately undone by leftover state.
+    private void TryActivateSlot(int index)
+    {
+        var def = _slotSkills[index];
+        if (def is null) return;
+        if (_slotCooldowns[index] > 0f) return;
+        if (_player.Resource < def.Cost) return;
+
+        var prePos = _player.ContinuousPosition;
+        var ctx = new SkillContext
+        {
+            Caster = _player,
+            Target = _lastCursorCell,
+            Map = _map,
+            Hostiles = _enemies.Cast<Entity>().ToList(),
+            Vfx = _skillVfx,
+        };
+        def.Behavior.Execute(ctx);
+        _player.Resource -= def.Cost;
+        _slotCooldowns[index] = def.CooldownSec;
+
+        if (_player.ContinuousPosition != prePos)
+        {
+            // Skill translated the caster (Charge etc.). Drop the
+            // pending walk + attack target so the dash isn't undone by
+            // leftover state, then convert the would-be teleport into a
+            // brief animated lerp from prePos to where the skill landed.
+            _movement.Stop();
+            _combat.Clear();
+
+            var dashEnd = _player.ContinuousPosition;
+            _player.ContinuousPosition = prePos;
+            _dashStart = prePos;
+            _dashEnd = dashEnd;
+            var distance = Vector2.Distance(prePos, dashEnd);
+            _dashTotalSec = distance / DashTilesPerSec;
+            _dashRemainingSec = _dashTotalSec;
+        }
+    }
+
+    private void GrantResourceOnHit()
+    {
+        _player.Resource = Math.Min(
+            _player.MaxResource,
+            _player.Resource + ResourceGainPerAutoAttackHit);
+    }
+
+    // Out-of-combat HP regen: once OutOfCombatRegenDelaySec has passed since
+    // the last damage tick, accumulate fractional HP at RegenPerSec and apply
+    // whole HP each frame. The accumulator preserves fractional progress
+    // across frames so the regen feels smooth at the per-tick scale.
+    private void TickHpRegen(float deltaSec)
+    {
+        _timeSinceLastDamage += deltaSec;
+        if (_timeSinceLastDamage < OutOfCombatRegenDelaySec) return;
+        if (_player.Health >= _player.MaxHealth) { _regenAccumulator = 0f; return; }
+
+        _regenAccumulator += deltaSec * RegenPerSec;
+        var heal = (int)_regenAccumulator;
+        if (heal <= 0) return;
+        _regenAccumulator -= heal;
+        _player.Health = Math.Min(_player.MaxHealth, _player.Health + heal);
+    }
+
+    // Bump HP and Damage on a freshly-created enemy based on _currentFloor.
+    // Floor 1 applies no scaling; later floors multiply by the linear curves
+    // configured at the top of the file. Min 1 on both so floor multipliers
+    // never round a tiny base stat to zero.
+    private void ApplyFloorScaling(Enemy enemy)
+    {
+        if (_currentFloor <= 1) return;
+        var depth = _currentFloor - 1;
+        var hpScale = 1f + HpScalePerFloor * depth;
+        var dmgScale = 1f + DmgScalePerFloor * depth;
+        enemy.MaxHealth = Math.Max(1, (int)MathF.Round(enemy.Definition.BaseHealth * hpScale));
+        enemy.Health = enemy.MaxHealth;
+        enemy.Damage = Math.Max(1, (int)MathF.Round(enemy.Definition.BaseDamage * dmgScale));
+    }
+
     // Damage / death event handlers shared by both player and enemy entities.
     // Routes to HitFeedback for the visual + hit-stop response.
     private void OnEntityDamaged(Entity entity, int amount)
     {
+        // Reset the regen timer whenever the player takes damage — keeps the
+        // "out of combat" gate honest. Enemy damage doesn't reset anything.
+        if (entity is Player) _timeSinceLastDamage = 0f;
+
         // Red on player so the "you got hit" cue is unmistakable; warm yellow
         // on enemies for "you landed a swing" feedback.
         var color = entity is Player
@@ -152,12 +457,28 @@ public sealed class GameScreen : SadConsole.Console
             _hitFeedback.OnDied(entity);
     }
 
-    // Tear down current enemies, generate a fresh Wolfwood floor, reposition
-    // the player at full HP. Used on player death until real corpse-run /
-    // XP-loss death lands.
-    private void RegenerateFloor()
+    // Walking onto a Threshold tile triggers descent: increment floor depth,
+    // load a fresh layout at the new depth. HP carries over (descent doesn't heal).
+    private void Descend()
+    {
+        _currentFloor++;
+        LoadFloor(restoreFullHealth: false, reason: "descent");
+    }
+
+    // Real corpse-run / XP-loss death is deferred — for now, dying just
+    // regenerates the current floor at full HP.
+    private void RegenerateAfterDeath()
+    {
+        LoadFloor(restoreFullHealth: true, reason: "death");
+    }
+
+    // Tear down current enemies + transient effects, generate a fresh floor
+    // at _currentFloor depth, reposition the player at the new entry tile.
+    private void LoadFloor(bool restoreFullHealth, string reason)
     {
         _hitFeedback.Clear();
+        _clickIndicator.Clear();
+        _skillVfx.Clear();
         foreach (var visual in _enemyVisuals.Values)
             _entityManager.Remove(visual);
         _enemies.Clear();
@@ -165,20 +486,61 @@ public sealed class GameScreen : SadConsole.Console
         _combat.Clear();
         _movement.Stop();
 
-        var zone = Registries.Zones.Get("wolfwood");
+        // Skill / regen state resets on every load. Rage is restored on
+        // death (a "fresh start" from the previous floor); descent leaves it
+        // alone so a saved-up resource pool carries through to the new fight.
+        Array.Clear(_slotCooldowns, 0, _slotCooldowns.Length);
+        _regenAccumulator = 0f;
+        _timeSinceLastDamage = OutOfCombatRegenDelaySec;
+        _dashRemainingSec = 0f;
+        if (restoreFullHealth) _player.Resource = 0;
+
         var seed = Environment.TickCount;
-        System.Console.WriteLine($"[Tarpg] Player died. Regenerating {zone.Name} (seed {seed})");
-        var floor = zone.Generator.Generate(_map.Width, _map.Height, seed);
+        System.Console.WriteLine(
+            $"[Tarpg] {reason}: loading {_zone.Name} F{_currentFloor} (seed {seed})");
+        var floor = _zone.Generator.Generate(WorldWidth, WorldHeight, seed, _currentFloor);
 
         _map = floor.Map;
         _player.SetTile(floor.Entry);
-        _player.Health = _player.MaxHealth;
+        if (restoreFullHealth) _player.Health = _player.MaxHealth;
 
         _map.ComputeFovFor(_player.Position, FovRadius);
         _lastPlayerTile = _player.Position;
+        _lastCursorCell = _player.Position;
 
         foreach (var spawn in floor.EnemySpawnPoints)
-            SpawnEnemy(Wolf.Definition, spawn);
+            SpawnPack(PickEnemyForZone(), spawn);
+
+        UpdateCamera();
+    }
+
+    // Standard weighted-pick over the zone-eligible subset of the enemy
+    // registry. Rebuilt per spawn so future per-floor weight curves (or
+    // runtime tweaks) apply with no caching to invalidate.
+    private EnemyDefinition PickEnemyForZone()
+    {
+        var totalWeight = 0;
+        foreach (var def in Registries.Enemies.All)
+        {
+            if (!def.ZoneIds.Contains(_zone.Id)) continue;
+            if (def.RarityWeight <= 0) continue;
+            totalWeight += def.RarityWeight;
+        }
+        if (totalWeight == 0)
+            throw new InvalidOperationException(
+                $"No spawnable enemies registered for zone '{_zone.Id}'.");
+
+        var pick = Random.Shared.Next(totalWeight);
+        foreach (var def in Registries.Enemies.All)
+        {
+            if (!def.ZoneIds.Contains(_zone.Id)) continue;
+            if (def.RarityWeight <= 0) continue;
+            pick -= def.RarityWeight;
+            if (pick < 0) return def;
+        }
+
+        // Unreachable given totalWeight > 0; satisfies the compiler.
+        throw new InvalidOperationException("Weighted enemy roll fell through.");
     }
 
     public override void Update(TimeSpan delta)
@@ -189,10 +551,26 @@ public sealed class GameScreen : SadConsole.Console
         // the native (8x16, aspect=2) and square (16x16, aspect=1) modes.
         var cellAspect = (float)FontSize.Y / FontSize.X;
 
-        // Hit-stop: when a swing connects, both player and enemy movement +
-        // attack ticks freeze for ~80ms so the impact reads. Cooldowns hold
-        // their value across the freeze; they resume from where they were.
-        var frozen = _hitFeedback.HitStopRemaining > 0f;
+        // Active dash: tween player position toward _dashEnd, snap exactly
+        // on landing. Done before the frozen check so the lerp continues
+        // even though gameplay is paused during the dash window.
+        if (_dashRemainingSec > 0f)
+        {
+            _dashRemainingSec = MathF.Max(0f, _dashRemainingSec - deltaSec);
+            var t = _dashTotalSec > 0f
+                ? 1f - (_dashRemainingSec / _dashTotalSec)
+                : 1f;
+            t = Math.Clamp(t, 0f, 1f);
+            _player.ContinuousPosition = Vector2.Lerp(_dashStart, _dashEnd, t);
+            if (_dashRemainingSec <= 0f)
+                _player.ContinuousPosition = _dashEnd;
+        }
+
+        // Hit-stop and dash both freeze the gameplay clock — same pattern,
+        // different reason. Hit-stop sells the impact of a successful swing;
+        // dash gates input until the lerp lands so the player can't queue a
+        // walk-target halfway through the animation.
+        var frozen = _hitFeedback.HitStopRemaining > 0f || _dashRemainingSec > 0f;
 
         if (!frozen)
         {
@@ -212,7 +590,8 @@ public sealed class GameScreen : SadConsole.Console
                 {
                     // Either in range, or shift+click force-stand. Stop moving and try to swing.
                     _movement.Stop();
-                    _combat.TryAttack(_player, deltaSec);
+                    if (_combat.TryAttack(_player, deltaSec))
+                        GrantResourceOnHit();
                 }
             }
             else
@@ -224,14 +603,20 @@ public sealed class GameScreen : SadConsole.Console
 
         ReapDead();
 
-        // FOV only needs to recompute when the player crosses a tile boundary.
-        // Position is the floor of ContinuousPosition, so equality checks here
-        // catch every tile transition without per-frame overhead. We do this
-        // BEFORE AI tick so each enemy queries the freshest FOV state.
+        // Tile transition: handle descent-on-Threshold first (Descend swaps
+        // _map, recomputes FOV at the new entry, and resets _lastPlayerTile).
+        // Otherwise just refresh FOV at the new tile.
         if (_player.Position != _lastPlayerTile)
         {
-            _map.ComputeFovFor(_player.Position, FovRadius);
-            _lastPlayerTile = _player.Position;
+            if (_map[_player.Position].Type == TileTypes.Threshold)
+            {
+                Descend();
+            }
+            else
+            {
+                _map.ComputeFovFor(_player.Position, FovRadius);
+                _lastPlayerTile = _player.Position;
+            }
         }
 
         // Each live enemy's AI decides chase / attack / idle for this frame.
@@ -249,14 +634,31 @@ public sealed class GameScreen : SadConsole.Console
         // the floor and respawn at full HP. Real corpse-run / XP-loss death
         // is deferred per docs/STATUS.md.
         if (_player.IsDead)
-            RegenerateFloor();
+            RegenerateAfterDeath();
 
         // Effects always tick (so the hit-stop timer counts down even while
         // we're "frozen", and damage numbers / kill-burst particles keep
         // animating during the freeze for visual punch).
         _hitFeedback.Tick(deltaSec, FontSize);
+        _clickIndicator.Tick(deltaSec, FontSize);
+        _skillVfx.Tick(deltaSec);
 
+        // Per-slot skill cooldowns decay in real time, including across
+        // hit-stop — matches how cooldowns work in Diablo-style ARPGs.
+        for (var i = 0; i < SlotCount; i++)
+        {
+            if (_slotCooldowns[i] > 0f)
+                _slotCooldowns[i] = MathF.Max(0f, _slotCooldowns[i] - deltaSec);
+        }
+
+        TickHpRegen(deltaSec);
+
+        UpdateCamera();
         DrawMap();
+        // SkillVfx renders AFTER DrawMap so its area-highlight tints land
+        // on top of the freshly painted cells (otherwise DrawMap would
+        // overwrite them). It also paints / clears the flash overlay.
+        _skillVfx.Render();
         SyncPlayerVisual();
         SyncEnemyVisuals();
         DrawHud();
@@ -275,6 +677,14 @@ public sealed class GameScreen : SadConsole.Console
         if (keyboard.IsKeyPressed(Keys.OemMinus) || keyboard.IsKeyPressed(Keys.Subtract))
             ChangeZoom(-1);
 
+        // Mapped skill slots. Pressed-event so each tap = one activation
+        // attempt; holding the key shouldn't auto-spam. M2 (right mouse) is
+        // handled in ProcessMouse on the press edge.
+        if (keyboard.IsKeyPressed(Keys.Q)) TryActivateSlot(SlotIndexQ);
+        if (keyboard.IsKeyPressed(Keys.W)) TryActivateSlot(SlotIndexW);
+        if (keyboard.IsKeyPressed(Keys.E)) TryActivateSlot(SlotIndexE);
+        if (keyboard.IsKeyPressed(Keys.R)) TryActivateSlot(SlotIndexR);
+
         return base.ProcessKeyboard(keyboard);
     }
 
@@ -288,19 +698,36 @@ public sealed class GameScreen : SadConsole.Console
         if (scrollDelta != 0)
             ChangeZoom(Math.Sign(scrollDelta));
 
-        // Right-button-held = force move (drift toward cursor, ignore enemies).
-        if (state.Mouse.RightButtonDown)
-        {
-            _combat.Clear();
-            var cell = state.CellPosition;
-            var target = new Vector2(cell.X + 0.5f, cell.Y + 0.5f);
-            _movement.RetargetTo(target, _player.ContinuousPosition, _map);
-            return true;
-        }
+        // state.CellPosition is in GameScreen-cell space (viewport coords,
+        // 0..viewportW × 0..viewportH). Translate to a world tile via the
+        // world console's View origin. The sub-cell pixel shift is below 1
+        // cell so this is off-by-one at the leftmost/topmost viewport edge
+        // when the camera is mid-pan; not worth pixel-precise routing for v0.
+        var view = _worldConsole.Surface.View;
+        var worldCol = state.CellPosition.X + view.X;
+        var worldRow = state.CellPosition.Y + view.Y;
+        _lastCursorCell = new Position(worldCol, worldRow);
 
-        if (state.Mouse.LeftButtonDown)
+        // Detect left-button release as a one-shot edge so we can drop a
+        // "you clicked here" pulse at the cursor cell. Tracked manually since
+        // SadConsole's MouseScreenObjectState exposes "currently held" but
+        // not the press↔release transition.
+        var leftDown = state.Mouse.LeftButtonDown;
+        if (_wasLeftButtonDown && !leftDown)
+            _clickIndicator.Spawn(new Vector2(worldCol + 0.5f, worldRow + 0.5f));
+        _wasLeftButtonDown = leftDown;
+
+        // Right-button press edge → activate the M2 skill slot. Force-move
+        // (the previous RMB-held behavior) is gone since the click-target
+        // radius + far-floor clicks already cover walking past enemies.
+        var rightDown = state.Mouse.RightButtonDown;
+        if (rightDown && !_wasRightButtonDown)
+            TryActivateSlot(SlotIndexM2);
+        _wasRightButtonDown = rightDown;
+
+        if (leftDown)
         {
-            var cell = new Position(state.CellPosition.X, state.CellPosition.Y);
+            var cell = new Position(worldCol, worldRow);
 
             var clickedEnemy = FindLiveEnemyAt(cell);
             if (clickedEnemy is not null)
@@ -310,12 +737,21 @@ public sealed class GameScreen : SadConsole.Console
                 return true;
             }
 
-            // Empty floor click. If shift is held, ignore (force-stand has no
-            // floor target). Otherwise normal walk.
-            if (_shiftHeld) return true;
+            if (_shiftHeld)
+            {
+                // Shift + LMB held over empty floor = "stand here, no walk".
+                // Lets the user toggle out of a walk-drag by pressing shift
+                // mid-gesture without having to release the mouse. Combat
+                // targets are preserved so shift+click on an enemy followed
+                // by dragging the cursor across floor doesn't cancel the
+                // attack-stand on that enemy.
+                if (_combat.Target is null)
+                    _movement.Stop();
+                return true;
+            }
 
             _combat.Clear();
-            var target = new Vector2(cell.X + 0.5f, cell.Y + 0.5f);
+            var target = new Vector2(worldCol + 0.5f, worldRow + 0.5f);
             _movement.RetargetTo(target, _player.ContinuousPosition, _map);
             return true;
         }
@@ -334,21 +770,78 @@ public sealed class GameScreen : SadConsole.Console
             (int)MathF.Round(BaseFontSize.X * multiplier),
             (int)MathF.Round(BaseFontSize.Y * multiplier));
         FontSize = newSize;
+        _worldConsole.FontSize = newSize;
+        _flashOverlay.FontSize = newSize;
+        _hudConsole.FontSize = newSize;
+        _bottomHudConsole.FontSize = newSize;
 
         // Resize the OS window to match the new pixel dimensions of the
-        // surface. Without this, larger cells overflow / smaller cells
-        // letterbox the existing window.
-        Game.Instance.ResizeWindow(Surface.Width, Surface.Height, newSize, true);
+        // *viewport*, not the world surface.
+        Game.Instance.ResizeWindow(_viewportCellsW, _viewportCellsH, newSize, true);
     }
 
+    // Compute the camera origin in surface-pixel coords, split into integer
+    // cell View origin + sub-cell pixel remainder. Apply the View to the
+    // world console's surface and the remainder to its Position. This is what
+    // gives us smooth cell-to-cell panning instead of single-cell pop-jumps.
+    //
+    // Y axis centers the player in the *visible* region (rows TopHudHeight
+    // .. viewportH - BottomHudHeight - 1) instead of the full viewport, so
+    // overlays don't cover the player. The Y clamp also tightens enough to
+    // let the camera follow the player to the very bottom of the world
+    // without dropping them under the bottom panel.
+    private void UpdateCamera()
+    {
+        var fontW = FontSize.X;
+        var fontH = FontSize.Y;
+
+        var visibleHeight = _viewportCellsH - TopHudHeight - BottomHudHeight;
+        var visibleCenterRow = TopHudHeight + visibleHeight / 2f;
+
+        var halfViewPxX = _viewportCellsW * fontW / 2f;
+        var camPxX = _player.ContinuousPosition.X * fontW - halfViewPxX;
+        var camPxY = _player.ContinuousPosition.Y * fontH - visibleCenterRow * fontH;
+
+        var maxCamPxX = MathF.Max(0, (_map.Width  - _viewportCellsW) * fontW);
+        var maxCamPxY = MathF.Max(0, (_map.Height - (TopHudHeight + visibleHeight)) * fontH);
+        camPxX = Math.Clamp(camPxX, 0, maxCamPxX);
+        camPxY = Math.Clamp(camPxY, 0, maxCamPxY);
+
+        var viewX = (int)MathF.Floor(camPxX / fontW);
+        var viewY = (int)MathF.Floor(camPxY / fontH);
+        var subPxX = camPxX - viewX * fontW;
+        var subPxY = camPxY - viewY * fontH;
+
+        var viewW = Math.Min(_viewportCellsW + 1, _map.Width  - viewX);
+        var viewH = Math.Min(_viewportCellsH + 1, _map.Height - viewY);
+
+        var newView = new Rectangle(viewX, viewY, viewW, viewH);
+        if (_worldConsole.Surface.View != newView)
+            _worldConsole.Surface.View = newView;
+
+        var shake = _skillVfx.GetShakeOffsetPx();
+        _worldConsole.Position = new Point(
+            -(int)MathF.Round(subPxX) + shake.X,
+            -(int)MathF.Round(subPxY) + shake.Y);
+    }
+
+    // Picks the live enemy nearest the clicked cell (by Euclidean distance to
+    // its continuous position) within ClickTargetRadius. Returns null if no
+    // enemy is in range — caller falls through to walk-to-here. This is what
+    // gives clicks the "swing in a direction" feel instead of demanding a
+    // pixel-perfect tile match against a moving target.
     private Enemy? FindLiveEnemyAt(Position cell)
     {
+        var clickPos = new Vector2(cell.X + 0.5f, cell.Y + 0.5f);
+        Enemy? best = null;
+        var bestDistSq = ClickTargetRadius * ClickTargetRadius;
         foreach (var enemy in _enemies)
         {
             if (enemy.IsDead) continue;
-            if (enemy.Position == cell) return enemy;
+            var d = Vector2.DistanceSquared(enemy.ContinuousPosition, clickPos);
+            if (d <= bestDistSq) { best = enemy; bestDistSq = d; }
         }
-        return null;
+        return best;
     }
 
     private void ReapDead()
@@ -374,7 +867,8 @@ public sealed class GameScreen : SadConsole.Console
     // ContinuousPosition is in tile-space, where (cx + 0.5, cy + 0.5) means the
     // visual center of cell (cx, cy). Convert to top-left pixel coords for the
     // entity (which expects the glyph's top-left corner) using the *current*
-    // FontSize so visuals follow the zoom level.
+    // FontSize so visuals follow the zoom level. Entity positions are in
+    // _worldConsole's surface-pixel space, so they pan with the world layer.
     private void SyncVisual(Entity entity, SadEntity visual)
     {
         var pos = entity.ContinuousPosition;
@@ -401,40 +895,66 @@ public sealed class GameScreen : SadConsole.Console
 
     private void DrawHud()
     {
-        var width = Surface.Width;
-        for (var x = 0; x < width; x++)
-            Surface.SetGlyph(x, 0, ' ', Color.White, Color.Black);
+        // Top HUD: zone + floor on the left, target info on the right when
+        // engaged. HP / Rage / skill state all live on the bottom panel now.
+        var surface = _hudConsole.Surface;
+        for (var x = 0; x < _viewportCellsW; x++)
+            surface.SetGlyph(x, 0, ' ', Color.White, Color.Black);
 
-        var line = $"  {_player.Name}  HP {_player.Health}/{_player.MaxHealth}";
+        var leftText = $" {_zone.Name} F{_currentFloor}";
+        surface.Print(0, 0, leftText, Color.White, Color.Black);
+
         if (_combat.Target is not null)
-            line += $"   |   target: {_combat.Target.Name}  HP {_combat.Target.Health}/{_combat.Target.MaxHealth}";
-        line += $"   |   zoom {ZoomLevels[_zoomIndex]:0.#}x";
+        {
+            var rightText = $"> {_combat.Target.Name} {_combat.Target.Health}/{_combat.Target.MaxHealth} ";
+            var rightStart = Math.Max(0, _viewportCellsW - rightText.Length);
+            surface.Print(rightStart, 0, rightText, Color.White, Color.Black);
+        }
+        surface.IsDirty = true;
 
-        Surface.Print(0, 0, line, Color.White, Color.Black);
-        Surface.IsDirty = true;
+        // Bottom panel: HP orb, HP potion, 5 skill slots, resource potion,
+        // resource orb. Slots and consumables that aren't filled in yet
+        // render as dim placeholders so the player learns the bar layout
+        // before content lands in those positions.
+        var slots = new[]
+        {
+            new SkillSlot("M2", _slotSkills[SlotIndexM2], _slotCooldowns[SlotIndexM2]),
+            new SkillSlot("Q",  _slotSkills[SlotIndexQ],  _slotCooldowns[SlotIndexQ]),
+            new SkillSlot("W",  _slotSkills[SlotIndexW],  _slotCooldowns[SlotIndexW]),
+            new SkillSlot("E",  _slotSkills[SlotIndexE],  _slotCooldowns[SlotIndexE]),
+            new SkillSlot("R",  _slotSkills[SlotIndexR],  _slotCooldowns[SlotIndexR]),
+        };
+        var hpPotion = new ConsumableSlot("1", '!', Count: 0);
+        var resourcePotion = new ConsumableSlot("2", '!', Count: 0);
+        _statusPanel.Render(_player, slots, hpPotion, resourcePotion);
     }
 
     private void DrawMap()
     {
         var fovOn = RenderSettings.EnableFov;
         var dim = RenderSettings.UnseenDimFactor;
+        var view = _worldConsole.Surface.View;
+        var surface = _worldConsole.Surface;
 
-        for (var y = 0; y < _map.Height; y++)
-        for (var x = 0; x < _map.Width; x++)
+        // Paint only cells inside the View. Off-screen cells retain whatever
+        // they last had until they scroll back in, which is fine since FOV /
+        // explored state changes only matter when a cell is visible.
+        for (var y = view.Y; y < view.Y + view.Height; y++)
+        for (var x = view.X; x < view.X + view.Width; x++)
         {
             var tile = _map[x, y];
             var p = new Position(x, y);
 
             if (!fovOn || _map.IsInFov(p))
-                Surface.SetGlyph(x, y, tile.Type.Glyph, tile.Type.Foreground, tile.Type.Background);
+                surface.SetGlyph(x, y, tile.Type.Glyph, tile.Type.Foreground, tile.Type.Background);
             else if (_map.IsExploredAt(p))
-                Surface.SetGlyph(x, y, tile.Type.Glyph,
+                surface.SetGlyph(x, y, tile.Type.Glyph,
                     Dim(tile.Type.Foreground, dim),
                     Dim(tile.Type.Background, dim));
             else
-                Surface.SetGlyph(x, y, ' ', Color.Black, Color.Black);
+                surface.SetGlyph(x, y, ' ', Color.Black, Color.Black);
         }
-        Surface.IsDirty = true;
+        surface.IsDirty = true;
     }
 
     private static Color Dim(Color c, float factor) =>

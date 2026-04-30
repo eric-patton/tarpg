@@ -1,7 +1,7 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-28
-> **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood floor 1 (BSP), active enemy AI (chase + attack), and v0 hit feedback (flash, damage numbers, kill burst, hit-stop); one enemy type (wolf); one playable class (Reaver); two-sided auto-attack melee combat; mouse modes; zoom; bundled square-cell font; on-death floor regen.
+> **Updated**: 2026-04-29
+> **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); one playable class (Reaver); two-sided auto-attack melee combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
 
@@ -50,12 +50,25 @@ Both `.bat` files include `cd /d "%~dp0"` so they work from any subdirectory.
 ## Current state of the build
 
 When you `run`, you get:
-- **Window**: 80×30 cells. Square-cells mode active (12×12 Milazzo CP437 font), so window is 960×360 px at 1× zoom.
-- **HUD** (top row): walker name, HP, current target HP, current zoom level.
-- **Procgen Wolfwood floor**: BSP-generated floor with ~4–7 rectangular rooms, L-shaped corridors connecting siblings, walls everywhere else. Different layout each run; seed is logged to stdout. A Threshold (`>`) tile sits in the room farthest from the entry as the future-boss anchor.
+- **Window**: 80×30 cell viewport (Square-cells mode active, 12×12 Milazzo CP437 font, so window is 960×360 px at 1× zoom).
+- **World**: 160×60 cells per generated floor, ~4× the area of the viewport. Camera follows the player and clamps to map edges.
+- **HUD** (top row of viewport): walker name, HP, zone + floor depth, current target HP, current zoom level.
+- **Procgen Wolfwood floor**: BSP-generated floor with ~4–10 rectangular rooms (more than before thanks to the larger map), L-shaped corridors connecting siblings, walls everywhere else. Different layout each run; seed is logged to stdout. A Threshold (`>`) tile sits in the room farthest from the entry — walking onto it descends to the next floor.
+- **Multi-floor descent**: stepping onto the Threshold loads a fresh layout at floor depth +1. HP carries over. Per-floor difficulty scaling is deferred (every floor is identical density / stat-wise for now).
 - **FOV / fog of war**: a circular 10-tile radius around the player renders in full color; explored-but-not-currently-visible tiles render dim (RGB × 0.5); never-explored tiles render black. Walls block sight. Enemy sprites are hidden when their tile is outside the player's FOV.
 - **Player** `@` (Reaver, red glyph) spawns at the floor's entry tile, glides smoothly toward cursor at 8 tiles/sec.
-- **Up to 8 `w` wolves** scatter across non-entry, non-boss rooms (1–2 per room), at least 6 chebyshev tiles from the entry. They aggro when they enter the player's FOV (mutual LOS), keep chasing for 3 sec after losing sight, A* through walls, swing every 0.8 sec when adjacent for `BaseDamage` (4) per hit. Player can die — when HP hits 0, the floor regenerates with full HP.
+- **Enemy roster**: each spawn slot is a weighted draw from `Registries.Enemies.All` filtered by zone, then expanded into a pack of `def.PackSize` copies fanned out in chebyshev rings around the BSP-chosen point. Wolfwood pool today:
+  - `w` **wolf** — weight 5, HP 18, Dmg 4, speed 6, `melee_charger`. Standard mid-tier.
+  - `p` **wolf pup** — weight 3, HP 5, Dmg 1, speed 7, `melee_charger`, **PackSize 3**. Horde tier — each slot spawns 3 fast-but-fragile pups, creating swarm pressure.
+  - `W` **dire wolf** — weight 1, HP 50, Dmg 9, speed 4.5, `melee_charger`. Slow elite.
+  - `s` **wolfshade** — weight 1, HP 22, Dmg 6, speed 6.5, `melee_skirmisher`. Bites then retreats ~4 tiles for ~600ms before re-engaging — back-and-forth pacing instead of grind.
+  - `h` **howler** — weight 1, HP 14, Dmg 5, speed 5, `ranged_kiter`. Maintains 4–6 tile band from player and fires hitscan damage on a 1.4s cadence when LOS holds; backpedals when you close.
+  All AIs share FOV-symmetric mutual-LOS aggro with 3s memory. Player can die — when HP hits 0, the current floor regenerates with full HP, same depth.
+- **Per-floor scaling**: descent depth ramps both spawn slot count (`5 + floor`, capped at 12) and per-enemy stats. HP × `(1 + 0.15·(F−1))`, Dmg × `(1 + 0.10·(F−1))`. F1 spawns ~7 enemies; F8 spawns ~12 slots × ~30% pup-pack expansion ≈ 17 enemies, each with ~2× HP / ~1.7× damage of base.
+- **Forgiving click-targeting**: left-click picks the nearest live enemy within 1.5 tiles of the clicked cell, not just one on the exact tile. Empty floor clicks within 1.5 tiles of an enemy still attack instead of walk; right-click bypasses this for "walk past enemies" cases.
+- **Drift-on-unreachable**: clicks on a wall, deep inside an unreachable region, or off the map drift the player toward the cursor instead of doing nothing — collision sliding handles wall contact. Same fallback applies to enemy-chase pathfinding when A* fails.
+- **Click indicator pulse**: releasing the left mouse drops a brief `+` glyph at the cursor cell that fades over 250ms. Confirms "the game saw your click" without leaving a permanent marker.
+- **Shift-while-walking toggles to stand**: while LMB is held to walk, pressing shift stops the player in place without releasing the mouse first. Existing combat targets are preserved (shift+click on enemy → drag cursor across floor doesn't cancel the attack-stand).
 - **Hit feedback (juice v0)**: every successful hit flashes the target's glyph red for 120ms, spawns a drifting damage number (red on player, yellow on enemy), and freezes all movement / AI for 80ms hit-stop. Enemy deaths spray a 7-particle radial burst of `*` `'` `,` `.` `` ` `` glyphs that drift outward over 400ms.
 - **A\* pathfinding** around walls, axis-separated wall-slide collision, line-of-sight optimization.
 - **Combat** kicks in on click — walks into melee range, auto-attacks every 0.8s for 10 damage.
@@ -66,15 +79,18 @@ When you `run`, you get:
 |---|---|
 | **Left-click on enemy** | Attack-target: walk into range, auto-attack |
 | **Left-click on floor** | Walk there |
-| **Hold Right-click** | Force-move toward cursor (ignores enemies) |
+| **Right-click** | Activate the M2 skill slot (currently an empty placeholder until skills are bound to it) |
+| **Q** | Activate the Q skill (Cleave for the Reaver — chebyshev-adjacent AOE, 10 dmg, 10 Rage, 1.0s cooldown) |
+| **W / E / R** | Activate the W/E/R skill slots (placeholders today) |
 | **Shift + Left-click on enemy** | Force-stand-attack — no approach, only swings if adjacent |
+| **Shift + Left-click on empty floor** | Stop walking in place (only when there's no active combat target) |
 | **`+` / `-` / mouse wheel** | Zoom: 0.5×, 1×, 1.5×, 2×, 2.5×, 3× |
 
 ### Tunable constants (single source of truth)
 
 | Constant | Value | Where |
 |---|---|---|
-| `MovementController.TilesPerSecond` | `8f` | `Movement/MovementController.cs` |
+| `MovementController.DefaultTilesPerSecond` | `8f` (player baseline; enemies override per `EnemyDefinition.MoveSpeed`) | `Movement/MovementController.cs` |
 | `MovementController.WaypointArriveDistance` | `0.15f` | same |
 | `MovementController.TargetArriveDistance` | `0.05f` | same |
 | `CombatController.MeleeRange` | `1.4f` (covers diagonals) | `Combat/CombatController.cs` |
@@ -90,12 +106,42 @@ When you `run`, you get:
 | `BspGenerator.MaxDepth` | `4` | same |
 | `BspGenerator.MinRoomWidth` / `MinRoomHeight` | `4` / `3` | same |
 | `BspGenerator.RoomEdgeMargin` | `1` | same |
-| `BspGenerator.MinSpawnDistanceFromEntry` | `6` (chebyshev) | same |
-| `BspGenerator.MaxEnemiesPerFloor` | `8` | same |
+| `BspGenerator.MinSpawnDistanceFromEntry` | `4` (chebyshev, room-center vs entry) | same |
+| `BspGenerator.MaxEnemySlotsBase` / `Cap` | `6` / `12` (slots, not enemies — pack expansion can multiply) | same |
 | `BspGenerator.SplitAspectRatio` | `1.25f` | same |
+| `GameScreen.WorldWidth` / `WorldHeight` | `160` / `60` | `UI/GameScreen.cs` |
+| `Program.ScreenWidth` / `ScreenHeight` | `80` / `30` (viewport, in cells) | `Program.cs` |
 | `MeleeChargerAi.AggroMemorySec` | `3.0f` (chase persists this long after losing FOV) | `Enemies/Ai/MeleeChargerAi.cs` |
-| `MeleeChargerAi.AttackCooldownSec` | `0.8f` | same |
 | `MeleeChargerAi.MeleeRange` | `1.4f` (matches `CombatController.MeleeRange`) | same |
+| `SkirmisherAi.RetreatDistanceTiles` / `RetreatDurationSec` | `4.0f` / `0.6f` | `Enemies/Ai/SkirmisherAi.cs` |
+| `RangedKiterAi.AttackRangeTiles` | `6.0f` | `Enemies/Ai/RangedKiterAi.cs` |
+| `RangedKiterAi.PreferredDistanceMin` / `Max` | `4.0f` / `6.0f` | same |
+| `EnemyDefinition.MoveSpeed` | per-enemy (wolves 6, pups 7, dires 4.5, shades 6.5, howlers 5) | `Enemies/EnemyDefinition.cs` |
+| `EnemyDefinition.AttackCooldown` | per-enemy (default 0.8s; pups 0.6s, dires 1.0s, shades 1.0s, howlers 1.4s) | same |
+| `EnemyDefinition.PackSize` | per-enemy (default 1; pups 3) | same |
+| `GameScreen.HpScalePerFloor` / `DmgScalePerFloor` | `0.15f` / `0.10f` (linear per descent depth) | `UI/GameScreen.cs` |
+| `GameScreen.PackSpreadRadiusMax` | `3` (chebyshev rings filled when expanding a pack) | same |
+| `GameScreen.OutOfCombatRegenDelaySec` / `RegenPerSec` | `3.0f` / `5.0f` (HP/sec after 3s without damage) | same |
+| `GameScreen.ResourceGainPerAutoAttackHit` | `5` (Rage per landed auto-attack swing) | same |
+| `Cleave.CooldownSec` / `Cost` / `Damage` | `1.0f` / `10` Rage / `10` (matches base auto-attack) | `Skills/Cleave.cs` |
+| `HeavyStrike.CooldownSec` / `Cost` / `Damage` | `1.5f` / `0` / `25` (single-target, range-gated) | `Skills/HeavyStrike.cs` |
+| `Charge.CooldownSec` / `Cost` / `Damage` / `MaxDistanceTiles` | `5.0f` / `15` Rage / `15` / `6` | `Skills/Charge.cs` |
+| `WarCry.CooldownSec` / `Cost` / `HealAmount` | `12.0f` / `25` Rage / `25` HP | `Skills/WarCry.cs` |
+| `Whirlwind.CooldownSec` / `Cost` / `Damage` / `Radius` | `6.0f` / `30` Rage / `15` / `2` (chebyshev) | `Skills/Whirlwind.cs` |
+| `GameScreen.DashTilesPerSec` | `30f` (lerp speed for skill-induced teleports) | `UI/GameScreen.cs` |
+| `SkillVfx.HighlightMaxTint` | `0.7f` (peak bg-color blend for area highlights) | `UI/Effects/SkillVfx.cs` |
+| `SkillVfx.FlashPeakAlpha` | `160` (peak screen-flash alpha out of 255) | same |
+| Per-skill VFX (highlight life / shake / flash) | Cleave 0.25s/2px·0.08s, HS 0.2s/3px·0.1s, WW 0.3s/5px·0.15s, WC green flash 0.4s | each `Skills/<Name>.cs` |
+| `GameScreen.TopHudHeight` / `BottomHudHeight` | `1` / `5` (rows reserved at viewport edges for HUD overlays) | `UI/GameScreen.cs` |
+| `StatusPanel.OrbWidth` / `OrbHeight` | `5` / `5` (HP / resource orb dimensions in cells) | `UI/Effects/StatusPanel.cs` |
+| `StatusPanel.SlotWidth` / `SlotHeight` / `SlotGap` | `6` / `5` (full panel) / `4` | same |
+| `StatusPanel.ConsumableWidth` / `ConsumableHeight` | `4` / `5` (potion-slot dimensions, flank the orbs) | same |
+| `GameScreen.SlotCount` | `5` (M2, Q, W, E, R) | `UI/GameScreen.cs` |
+| `GameScreen.ClickTargetRadius` | `1.5f` (Euclidean tiles around click for enemy pick) | `UI/GameScreen.cs` |
+| `ClickIndicator.LifeSec` | `0.25f` (click-pulse fade-out duration) | `UI/Effects/ClickIndicator.cs` |
+| `Wolf.RarityWeight` | `4` (common) | `Enemies/Wolf.cs` |
+| `DireWolf.RarityWeight` | `1` (rare; ~20% of zone rolls) | `Enemies/DireWolf.cs` |
+| `DireWolf.BaseHealth` / `BaseDamage` | `50` / `9` | same |
 | `HitFeedback.FlashSec` | `0.12f` | `UI/Effects/HitFeedback.cs` |
 | `HitFeedback.FlashColor` | `(255, 80, 80)` red | same |
 | `HitFeedback.DamageNumberLifeSec` | `0.6f` | same |
@@ -108,6 +154,122 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Skill VFX system — area highlights, screen shake, screen flash
+- **`Skills/ISkillVfx.cs`** (new) — interface lives in `Tarpg.Skills` so skill behaviors don't pull a UI dependency for what's logically "side effects of the ability." Three primitives: `PlayAreaHighlight(tiles, color, lifeSec)`, `PlayScreenShake(intensityPx, durationSec)`, `PlayScreenFlash(color, durationSec)`. All fire-and-forget; the renderer ticks the resulting state independently.
+- **`Skills/SkillContext.cs`** — added `ISkillVfx? Vfx`. Null in headless contexts; GameScreen plugs the concrete renderer in when activating skills.
+- **`UI/Effects/SkillVfx.cs`** (new) — concrete implementation. Highlights re-tint the world surface's bg toward the highlight color (alpha-faded toward zero over `lifeSec`); screen shake stacks-by-max and feeds an additive pixel offset into `UpdateCamera`; screen flash paints a fullscreen translucent fill on a dedicated overlay child. `Tick(deltaSec)` advances timers, `Render()` repaints (after `DrawMap` so highlight tints aren't immediately overwritten), `GetShakeOffsetPx()` is sampled once per camera update, `Clear()` resets state on floor regen.
+- **`UI/GameScreen.cs`** — new `_flashOverlay` child Console placed between the world and HUD layers (so flashes tint the playfield without dimming the bars). `_skillVfx` constructed with both surfaces. Wired through: ticked alongside HitFeedback / ClickIndicator, rendered after `DrawMap`, shake offset added to `_worldConsole.Position` in `UpdateCamera`, cleared on `LoadFloor`. `SkillContext.Vfx` plumbed in `TryActivateSlot`.
+- **Per-skill effects** wired into each `Execute`:
+  - **Cleave** — 8-tile chebyshev ring highlight (orange `(220,90,40)`, 0.25s) + 2px shake for 0.08s. The "where the swing landed" footprint reads at a glance.
+  - **HeavyStrike** — 3×3 highlight at the click cell (orange, 0.2s) + 3px shake for 0.1s. Slightly punchier than Cleave per hit since it's single-target.
+  - **Whirlwind** — full chebyshev-2 footprint (5×5 around caster, 25 cells, orange, 0.3s) + 5px shake for 0.15s. Big visible spin.
+  - **WarCry** — fullscreen green flash `(80,220,120)` over 0.4s. Cleanly conveys "shouted, steeled, healed" without changing world cells.
+  - **Charge** — no extra VFX; the lerp dash is its own feedback.
+
+### Reaver skill kit — Heavy Strike, Charge, War Cry, Whirlwind
+- **`Skills/HeavyStrike.cs`** (new, M2) — single-target on the cursor cell with a 1-tile chebyshev forgiveness radius (matches `ClickTargetRadius`). Range-gated to chebyshev 2 from the caster so M2 reads as a "wider, slower auto-attack." 25 dmg, 0 cost, 1.5s cooldown, glyph `!`.
+- **`Skills/Charge.cs`** (new, W) — straight-line dash from the player toward `_lastCursorCell`, capped at 6 tiles. Walks the line one tile at a time; stops at the first wall (lands on the last walkable tile before it) or the first enemy (deals damage and parks the caster adjacent). 15 dmg, 15 Rage, 5.0s cooldown, glyph CP437 `►`.
+- **`Skills/WarCry.cs`** (new, E) — instant heal, no buff system needed. 25 HP back on a 12s cooldown for 25 Rage. Glyph `*` (the burst-shout reading) — buff version of War Cry waits for the buff state machine.
+- **`Skills/Whirlwind.cs`** (new, R) — single-pulse AOE around the player, chebyshev radius 2, 15 dmg per hit. 30 Rage, 6.0s cooldown, glyph `%`. Channel-while-held variant deferred until a channel state machine lands.
+- **`UI/GameScreen.cs`**:
+  - All 5 slots now wired in the ctor: `_slotSkills[M2..R] = HeavyStrike, Cleave, Charge, WarCry, Whirlwind` (Cleave stays on Q where the player learned it).
+  - New `_lastCursorCell` field — updated on every `ProcessMouse` and used as `SkillContext.Target` so cursor-aimed skills hit where the player is looking. Self-AOE skills (Cleave, War Cry, Whirlwind) ignore Target and use `caster.Position`.
+  - `TryActivateSlot` snapshots `_player.ContinuousPosition` before behavior execution. If the skill teleports the caster (Charge), the leftover walk target / combat target are cleared so the dash doesn't immediately get undone by stale state, AND the position change is converted into a brief animated lerp instead of a 1-frame snap. Tween fields `_dashStart` / `_dashEnd` / `_dashTotalSec` / `_dashRemainingSec` advance in `Update`; duration = `distance / DashTilesPerSec` (30 t/s, ~4× walk speed) so a 6-tile charge lands in 200ms while a 1-tile dash lands in ~33ms.
+  - Dash state extends the existing `frozen` flag (alongside hit-stop), so player input + enemy AI both pause for the duration of the lerp. `LoadFloor` resets `_dashRemainingSec` so descent / death never inherit a stale animation.
+
+### M2 skill slot + consumable scaffolding in the bottom HUD
+- **`UI/GameScreen.cs`** — promoted `_equippedSkill` / `_skillCooldownSec` (scalars) to `SkillDefinition?[] _slotSkills` + `float[] _slotCooldowns` indexed by `SlotCount = 5`. Slot indices: `M2 = 0, Q = 1, W = 2, E = 3, R = 4`. `Q` is the only one wired today — Cleave from the registry. `TryActivateEquippedSkill()` became `TryActivateSlot(int)`. Update tick decrements every slot's cooldown; LoadFloor `Array.Clear`s the cooldown array.
+- **Right-click → M2 skill activation**: `ProcessMouse` no longer force-moves on RMB-held. Instead it tracks a `_wasRightButtonDown` press-edge and calls `TryActivateSlot(SlotIndexM2)` once per click. The previous force-move utility is covered by `ClickTargetRadius`-far floor clicks; user feedback was that RMB-walk wasn't being used.
+- **Q / W / E / R keys** all bind in `ProcessKeyboard` (pressed-event so holds don't auto-spam). W/E/R no-op until the skill content lands; M2 likewise.
+- **`UI/Effects/StatusPanel.cs`** — `Render` now takes `(player, skillSlots, hpPotion?, resourcePotion?)`. New `ConsumableSlot` record (Keybind, Glyph, Count) and `DrawConsumableSlot` renderer at 4 wide × 5 tall, mirroring the skill-slot layout (keybind top, glyph middle, count bottom when > 0). Empty (Count = 0) draws as dim placeholder so the slot's role is visible before any potion exists. Skill-slot row now centers between the consumable slots so adding/removing potions doesn't drift the skill bar.
+- **Layout (80 wide)**: HP orb 0–4, HP potion 5–8, 5 skill slots centered between cols 9 and 70, resource potion 71–74, resource orb 75–79. Skill slots: M2 / Q / W / E / R left-to-right.
+- **`UI/GameScreen.DrawHud`** passes 5 SkillSlots and 2 placeholder ConsumableSlots (count = 0) to `_statusPanel.Render` each frame. Wired so when potion items + drop / pick-up logic land, the HUD just gets real `Count` values without further UI work.
+
+### Bottom-bar HUD (HP orb, resource orb, skill slots) + camera-aware visible region
+- **`UI/Effects/StatusPanel.cs`** (new) — owns rendering for the bottom-of-viewport panel. Layout in 80×5: HP orb at cols 0–4, resource orb at cols 75–79, four skill slots centered in between. Each orb is a 5×5 cell block whose vertical fill rises with current/max (rounded to row count, with a 1-row "sliver" floor when value > 0 but rounds to zero so the orb never goes pure-empty until you actually hit zero). Current value renders as text on the middle row over whatever fill color landed there — at low HP the number sits on dim red as a built-in danger cue. Resource orb color follows `WalkerClassDefinition.Resource`: Rage warm orange, Focus yellow, Insight blue, Echo purple. Skill slots show keybind / glyph / status (cooldown seconds, "low" rage, or "rdy"); empty slots dimmed. Public `record struct SkillSlot(Keybind, Skill?, CooldownRemaining)` is the data the panel consumes.
+- **`Skills/SkillDefinition.cs`** — added `required char Glyph` so the bottom-bar slot has something to render. Cleave's glyph is `X` (slash-mark feel).
+- **`UI/GameScreen.cs`**:
+  - New `_bottomHudConsole` child Console (80×5) cell-positioned at viewport row 25, plus a `StatusPanel` wrapper. `DrawHud` now writes only the top row (zone+floor on the left, in-combat target on the right) and delegates HP/Rage/skill rendering to `_statusPanel.Render(_player, slots)`. Slot list is `[Q=Cleave, W=null, E=null, R=null]` for now; W/E/R fill in once more skills land.
+  - `TopHudHeight = 1`, `BottomHudHeight = StatusPanel.PanelHeight = 5` constants. `UpdateCamera` now centers the player in the **visible region** (rows 1..24) instead of the full 30-row viewport — Y center = `TopHudHeight + visibleHeight/2 = 13`. Y-axis clamp loosened from `worldH - viewportH` to `worldH - (TopHudHeight + visibleHeight)`, so the player can walk to the very bottom of the world without getting covered by the bottom panel. X-axis math unchanged (no horizontal HUD overlap).
+  - All three child consoles get the same `FontSize` in the ctor and on every zoom step.
+- **HUD line rewrite**: top is just `" the Wolfwood F1                                              > wolf 18/18 "`. All player stats and skill state moved to the bottom panel where they read at-a-glance.
+
+### Passive HP regen + Cleave skill on Q
+- **`Skills/SkillDefinition.cs`** — `CooldownTicks` (int) → `CooldownSec` (float). Tick-based cooldowns were a pre-real-time-loop placeholder; seconds match how `Update(deltaSec)` already drives everything else.
+- **`Skills/SkillContext.cs`** — added `IReadOnlyList<Entity> Hostiles`. AOE / cleave behaviors filter this by distance or direction; single-target behaviors will look up the entity at `Target` once those land.
+- **`Skills/Cleave.cs`** — implemented `CleaveBehavior.Execute`: damages every chebyshev-adjacent live enemy (the 8 surrounding tiles) for `Damage = 10` (matches `CombatController.BaseDamage` so "full weapon damage" is honest). Set `CooldownSec = 1.0f`. Caster's own tile filtered so a stacked enemy on top of the player still wouldn't take this swing.
+- **`UI/GameScreen.cs`**:
+  - `_equippedSkill` field initialized from `Registries.Skills.Get("cleave")` in the ctor; ProcessKeyboard binds `Q` to `TryActivateEquippedSkill()`.
+  - `TryActivateEquippedSkill` gates on `_skillCooldownSec > 0f` and `_player.Resource < def.Cost`, then builds a `SkillContext` (caster = player, target = player.Position, hostiles = current `_enemies` list cast to `Entity`) and runs the behavior. Skill TakeDamage calls fire HitFeedback's flash + damage-number on every hit enemy, so the visual cue is "many enemies pop at once."
+  - `_combat.TryAttack(_player, deltaSec)` return value is now captured; on a successful hit, `GrantResourceOnHit()` adds `ResourceGainPerAutoAttackHit = 5` Rage (clamped to MaxResource). Cleave's own hits don't grant Rage so it can't infinite-combo.
+  - `_skillCooldownSec` ticks down each Update including across hit-stop, matching ARPG cooldown convention.
+- **HP regen**:
+  - `OutOfCombatRegenDelaySec = 3.0f`, `RegenPerSec = 5.0f` constants at the top of `GameScreen`.
+  - `_timeSinceLastDamage` resets to 0 on every player-side `OnEntityDamaged` event; advances each Update.
+  - `TickHpRegen` uses a float `_regenAccumulator` so fractional HP carries between frames (avoids "regen 0 HP forever" rounding). Stops at MaxHealth.
+  - `LoadFloor` resets cooldown / regen accumulator / regen timer; on death (`restoreFullHealth = true`) Resource is also reset to 0 so a fresh-start floor doesn't hand the player a free Cleave.
+- **HUD line** rewritten to fit 80 cells with the new info: ` Reaver  HP 65/65  Rage 35/100  F1  > wolf 18/18  Q[Cleave ready]`. Trimmed the "the " article from class names; dropped zoom from the line (it's still bound on `+`/`-`/wheel, just not displayed). When the cooldown is active, the slot reads `Q[Cleave 0.7s]`; when underfunded, `Q[Cleave low]`.
+
+### Spawn distribution rewrite — no more empty rooms / zero-enemy floors
+- **`World/Generation/BspGenerator.cs`** — `ChooseEnemySpawns` was iterating rooms in BSP traversal order and taking 1–2 spawns per room until cap, which let a few early-iterated rooms eat all the slots while the rest of the floor sat empty. With small rooms close to entry, the per-tile distance filter could waste all 20 attempts and produce zero spawns despite slots being available.
+- New algorithm: build a `candidateRooms` pool once (skipping entry / boss / rooms whose center is within `MinSpawnDistanceFromEntry` chebyshev of entry), shuffle, then **first pass** places one spawn per candidate (guarantees no empty room while slots remain), **second pass** distributes the leftover slots randomly until cap or saturation. The room-level distance filter replaces the per-tile one — if a room is too close to entry, it never enters the pool and never wastes attempts.
+- Tuning: `MinSpawnDistanceFromEntry` 6 → **4** (still a buffer at spawn but not so wide it excludes most of the map at small entry-room sizes). `MaxEnemySlotsBase` 5 → **6** (F1 spawns 7 slots ≈ ~10–11 enemies after pup-pack expansion). `Cap` stays at 12.
+- Side effect: F2+ should never feel sparse again, and the "TON of empty rooms" pattern goes away — every reachable far-enough room gets at least one occupant before extras pile up.
+
+### BSP connectivity bugfix — corridors target rooms, not leaf bounds
+- **`World/Generation/BspGenerator.cs`** — corridor endpoints used to be the *leaf bounding-box midpoints*. Because each room is carved with a 1-tile margin and a random offset *inside* its leaf, that midpoint frequently fell in the wall margin between the room and the leaf edge. When that happened, the corridor was carved through wall but never actually entered the room — the room shipped sealed. (User repro: F1 with the Reaver spawning in a fully enclosed 6×6 room.)
+- Fix: each `BspNode` now stores a representative `Room` rect — the leaf's own room for leaves; inherited from the left subtree for internal nodes. `ConnectSubtree` carves L-corridors between `node.Left.Room` and `node.Right.Room` midpoints, both guaranteed to be inside floor tiles. The previous "deterministic without descending the tree" optimization comment is gone — the descent gets us the connectivity guarantee for free.
+- Added `VerifyAllRoomsReachable` flood-fill check after corridor carving: BFS from `entry` over walkable tiles, confirm every room has at least one tile in the visited set. Throws with the seed in the message if any room is unreachable, so future regressions surface immediately instead of bricking a run.
+
+### Enemy archetypes, hordes, stat baselines, per-floor scaling
+- **`Enemies/EnemyDefinition.cs`** — codified per-enemy baselines: `MoveSpeed` (default 6f), `AttackCooldown` (default 0.8s), `PackSize` (default 1). Combat AIs now read these instead of using AI-class consts, so adding a faster/slower/swarmier flavor is purely a definition tweak.
+- **`Movement/MovementController.cs`** — `TilesPerSecond` const → `DefaultTilesPerSecond = 8f` (player baseline) + a constructor parameter `tilesPerSecond` so enemies can have their own speed. Player still uses default via `new()`.
+- **`Entities/Enemy.cs`** — added per-instance `Damage` field, initialized from `Definition.BaseDamage` by `Enemy.Create`. AIs now read `self.Damage` instead of `self.Definition.BaseDamage`, which lets `GameScreen.SpawnEnemy` apply per-floor damage scaling without mutating the shared definition singleton. `ResolveAi` switch updated to take the full `EnemyDefinition` (so AIs can read MoveSpeed / AttackCooldown).
+- **`Enemies/Ai/SkirmisherAi.cs`** (new, `melee_skirmisher` tag) — bite-and-retreat melee. After a successful swing, picks a tile `RetreatDistanceTiles = 4.0f` away in the direction opposite the player and drifts there for `RetreatDurationSec = 0.6f` before re-engaging. Same FOV-symmetric aggro / 3s memory model as `MeleeChargerAi`. Movement uses the actor's `EnemyDefinition.MoveSpeed`.
+- **`Enemies/Ai/RangedKiterAi.cs`** (new, `ranged_kiter` tag) — maintains a 4–6 tile band from the player and fires hitscan damage on cooldown when LOS holds. Backpedals when the player closes inside the band; advances when the player breaks LOS or pulls past the band. No projectile entity for v0 — the existing HitFeedback flash + damage number on the player is the "you got shot" cue.
+- **`Enemies/Ai/MeleeChargerAi.cs`** — refactored to read movement speed and attack cooldown from the `EnemyDefinition` instead of holding them as AI consts. `AggroMemorySec` and `MeleeRange` stay as consts because they're behavioral, not stat-tier.
+- **Five enemy definitions** in `Enemies/`:
+  - `Wolf.cs` — weight bumped 4→5, explicit `MoveSpeed=6.0f`, `AttackCooldown=0.8f`. Backbone of every Wolfwood floor.
+  - `WolfPup.cs` (new) — `'p'`, weight 3, HP 5, Dmg 1, speed 7, cooldown 0.6s, `PackSize=3`. Horde tier: each spawn slot expands to a 3-pup cluster.
+  - `DireWolf.cs` — explicit `MoveSpeed=4.5f`, `AttackCooldown=1.0f`. Slow elite (was using AI default).
+  - `Wolfshade.cs` (new) — `'s'`, weight 1, HP 22, Dmg 6, speed 6.5, cooldown 1.0s, `melee_skirmisher`.
+  - `Howler.cs` (new) — `'h'`, weight 1, HP 14, Dmg 5, speed 5, cooldown 1.4s, `ranged_kiter`.
+  Spawn weights total 11, so a typical floor sees ~45% wolf, ~27% pup-pack, ~9% each elite/skirmisher/ranged.
+- **`UI/GameScreen.cs`** — new `SpawnPack(def, center)` fans out `def.PackSize` copies through expanding chebyshev rings around the BSP point (capped at `PackSpreadRadiusMax = 3`), skipping non-walkable / occupied tiles via a small `TryPlaceAt` helper. `SpawnEnemy` now calls `ApplyFloorScaling(enemy)` post-create which multiplies `MaxHealth` and `Damage` by `(1 + HpScalePerFloor·(floor−1))` and `(1 + DmgScalePerFloor·(floor−1))`. `HpScalePerFloor = 0.15f`, `DmgScalePerFloor = 0.10f`.
+- **`World/Generation/BspGenerator.cs`** — `MaxEnemiesPerFloor = 8` const → `MaxEnemySlotsBase = 5` + `Cap = 12`. `Generate` computes `maxEnemySlots = min(Cap, Base + floor)` and threads it through `ChooseEnemySpawns`. The `_ = floor;` stub from descent v0 is gone — `floor` now actually steers generation.
+
+### Input polish — drift, click pulse, shift-toggle
+- **`Movement/MovementController.cs`** — `RetargetTo` no longer nulls `_finalTarget` when A* fails (target unreachable, OOB, or surrounded by walls). The drift toward the cursor stays active and `ResolveCollision` handles the wall slide. Click on a wall = walk into it and stop; click off the map = drift to the world edge. Combat chase paths benefit too: enemy-chase that can't path through still tries to drift after the target instead of giving up.
+- **`UI/Effects/ClickIndicator.cs`** (new) — `+` glyph spawned at the click cell on left-button release, alpha-fades over `LifeSec = 0.25f` and despawns. Same SadEntity-on-EntityManager pattern as `HitFeedback`, attached to `_worldConsole` so the pulse pans with the camera.
+- **`UI/GameScreen.cs`**:
+  - Added `_clickIndicator` field initialized after `_hitFeedback`; ticked alongside hit feedback and cleared on `LoadFloor` so stale pulses don't carry across descent / death.
+  - Added `_wasLeftButtonDown` field; `ProcessMouse` detects the press↔release edge manually (SadConsole exposes "held" but not the edge) and calls `_clickIndicator.Spawn` on release.
+  - LMB-held + shift over empty floor branch now calls `_movement.Stop()` (instead of returning silently) — but only when there's no active combat target, so shift+click on an enemy followed by dragging across floor still preserves the attack-stand. This is what makes shift work as a clean walk↔stand toggle without having to release the mouse first.
+
+### Second enemy type + weighted rolls + looser click-target
+- **`Enemies/DireWolf.cs`** (new) — `EnemyDefinition` with id `"dire_wolf"`, glyph `'W'`, color cool desaturated purple, `BaseHealth=50`, `BaseDamage=9`, `AiTag="melee_charger"` (reuses the existing brain — different stats, not yet a different behavior tree), `ZoneIds=["wolfwood"]`, `RarityWeight=1`. Drops in via the registry's reflection auto-discovery — no central edits anywhere else.
+- **`Enemies/EnemyDefinition.cs`** — clarified the `RarityWeight` comment to standard weighted-pick semantics (higher = more likely; 0 disables spawn rolls). Replaces the old "0 = infinitely common; higher = rarer" wording which was inverted from how almost every weighted-roll API works.
+- **`Enemies/Wolf.cs`** — explicit `RarityWeight=4` (was relying on the default `=1`). Wolves now make up ~80% of Wolfwood spawn rolls vs ~20% for dire wolves.
+- **`UI/GameScreen.cs`** — new `PickEnemyForZone()` does a standard two-pass weighted pick over `Registries.Enemies.All` filtered by `ZoneIds.Contains(_zone.Id)` and `RarityWeight > 0`. Both spawn loops (ctor + `LoadFloor`) now call `SpawnEnemy(PickEnemyForZone(), spawn)` instead of hardcoding `Wolf.Definition`. Adding a new wolfwood enemy is now a single new file with no further wiring.
+- **`UI/GameScreen.cs`** — `FindLiveEnemyAt(Position)` now picks the nearest live enemy within `ClickTargetRadius = 1.5f` tiles of the click (Euclidean, against `enemy.ContinuousPosition`) instead of demanding exact-tile equality. ARPG attacks read as "swing in a direction" rather than precise picks against a moving target, so this matches player expectation when clicking into a clump of enemies. Right-click force-move is unchanged, so "walk past an enemy" remains an explicit gesture.
+
+### Camera follow + larger maps
+- **`UI/GameScreen.cs`** — three-layer rendering structure:
+  - **GameScreen** (parent `Console` at viewport size): owns input + framing. Its own surface is unused — the children cover it.
+  - **`_worldConsole`** (child `Console` at `WorldWidth × WorldHeight = 160 × 60`, `UsePixelPositioning = true`): renders the world cells and entities. Each frame `UpdateCamera` adjusts both `Surface.View` (integer cells) and `Position` (sub-cell pixel remainder) so the camera pans **smoothly between cells** instead of snapping a full cell at every tile boundary. View width is `viewportW + 1` so a buffer cell exists for the partial right/bottom render that appears when the camera is mid-pan.
+  - **`_hudConsole`** (child `Console` at viewport×1): renders the HUD on a non-shifted overlay, so the status line stays glued to screen y=0 while the world slides underneath. Added after the world child so it draws on top.
+- `UpdateCamera` math: `camPx = player.ContinuousPosition * FontSize - viewportHalfPx`, clamped to `[0, (mapPx - viewportPx)]`. `viewX/Y = floor(camPx / fontSize)`, `subPx = camPx - viewX * fontSize`. View origin gets the cell offset; `_worldConsole.Position = -subPx` (rounded) gets the pixel offset. Result is integer-pixel-precise sub-cell camera pans at any zoom level.
+- `DrawMap` paints only cells inside `Surface.View` — viewport-bounded loop (~2400 SetGlyph calls per frame regardless of world size). Off-screen cells retain their last paint until they scroll back in.
+- Window is sized to the **viewport** via `Game.Instance.ResizeWindow(_viewportCellsW, _viewportCellsH, fontSize, true)`, not the world surface, in both the ctor and `ChangeZoom`. Zoom syncs `FontSize` across all three consoles.
+- Mouse routing: `_worldConsole.UseMouse = false` and `_hudConsole.UseMouse = false`, so clicks bubble up to GameScreen. `state.CellPosition` is in viewport-cell space; world tile = `state.CellPosition + _worldConsole.Surface.View.X/Y`. Entities use `UsePixelPositioning = true` and live on `_worldConsole`'s entity manager, so they pan with the world layer automatically.
+
+### Multi-floor descent
+- **`World/Generation/IZoneGenerator.cs`** — added `int floor` parameter to `Generate`. Reserved for per-floor difficulty / density / size scaling.
+- **`World/Generation/BspGenerator.cs`** — accepts `floor` (currently unused, with a comment marking it as the wire-in point for scaling when it lands).
+- **`UI/GameScreen.cs`** — added `_currentFloor` (1-indexed, starts at 1) and a `_zone` field cached from `Registries.Zones.Get("wolfwood")`. Refactored the old `RegenerateFloor` into `LoadFloor(restoreFullHealth, reason)`, with two callers: `Descend()` (increments `_currentFloor`, keeps HP) and `RegenerateAfterDeath()` (restores HP, leaves floor depth untouched until corpse-run lands).
+- Tile-transition path in `Update` checks the new tile against `TileTypes.Threshold`; if the player just stepped onto one, calls `Descend()` (which itself recomputes FOV + camera at the new entry and resets `_lastPlayerTile`). Otherwise, refreshes FOV at the new tile. Same `Position != _lastPlayerTile` guard as before, just with one extra branch.
+- HUD line now includes `{ZoneName} F{N}`, e.g., `"the Wolfwood F3"`. Seed log on each load includes the reason: `"[Tarpg] descent: loading the Wolfwood F2 (seed 12345)"`.
 
 ### Hit feedback (juice v0)
 - **`Entities/Entity.cs`** — added `event Action<Entity, int>? Damaged` and `event Action<Entity>? Died` that fire from `TakeDamage` after the health adjustment. Damaged passes the actual amount applied (clamped); Died fires once on the zero-crossing transition.
@@ -198,35 +360,36 @@ When you `run`, you get:
 
 ## Up next (immediate work queue)
 
-### 1. Camera follow + larger maps
-**Goal**: maps bigger than the 80×30 viewport, with the world scrolling to keep the player centered. Unlocks the Option-B zoom-with-camera approach we sidelined earlier and lets Wolfwood floors actually feel like zones to descend through.
+### 1. Health potions as actual items
+**Goal**: passive regen handles between-fight healing, but for emergency-during-combat healing you need a consumable. The bottom-bar HUD already has the slot scaffolding (`ConsumableSlot` placeholder for `1` HP / `2` Resource), so this is mostly the drop / pick-up / use pipeline plus the first cut of an inventory model.
 
-**Approach**: SadConsole's `ScreenSurface.View` lets us render a window over a larger backing surface; tick that view origin from the player's position each frame. `BspGenerator` already accepts width/height parameters so larger floors are a single call-site change.
+**Approach**: drop on enemy kill at low chance (e.g. 8% per kill). Drop renders as a glyph on the floor (`!` red for HP, `!` orange for Resource). Walk over to pick up. Increments the consumable count. `1` key drinks an HP potion (heal + per-potion cooldown). `2` key drinks a resource potion. Stacks, single belt slot per type for v0.
 
-**Files to touch**: `UI/GameScreen.cs` (the orchestrator); possibly tweak `RenderSettings` or introduce a `WorldSize` constant.
+**Files to touch**: new `Items/ItemDefinition.cs` + `Items/HealthPotion.cs` / `ResourcePotion.cs`, possibly first cut of `Inventory.cs`, `UI/GameScreen.cs` (drop on kill, pickup on tile-cross, key bindings, ConsumableSlot wiring with real counts).
 
-**Estimated effort**: 1–2 sessions.
+**Estimated effort**: 1–2 sessions — most of the lift is the inventory cut and the on-floor item entity, both of which unlock follow-on items (loot drops, scrolls, etc.).
 
-### 2. Multi-floor descent
-**Goal**: walking onto the Threshold tile triggers a new floor at +1 floor depth. The Threshold finally does something.
+### 2. Skill / class balance pass
+**Goal**: 5 skills are in but they were tuned by gut not by play data. The Cleave-vs-auto-attack note is the canary; once the player has tools to actually play with, sit down and tune Damage / Cost / Cooldown across the whole kit so each skill has a clear identity (M2 = small/free swing, Q = horde clear, W = engage, E = bail-out, R = nuke).
 
-**Approach**: detect when the player's tile becomes Threshold; trigger a new generation with `floor + 1`. `IZoneGenerator.Generate` gains a `floor: int` parameter (planned-for one-line change).  Hook for difficulty scaling: enemy roll table, count, stat multipliers.
+**Approach**: open-ended balance tuning — record perceived strength on a few floors, adjust constants, replay. Probably also want to introduce damage scaling tied to player level / weapon (currently all skills hardcode their damage value).
 
-**Files to touch**: `World/Generation/IZoneGenerator.cs`, `BspGenerator.cs`, `UI/GameScreen.cs`, status display in HUD for current floor.
+**Files to touch**: each `Skills/*.cs` (numbers), maybe a new `PlayerStats.cs` if we factor weapon damage out of the skills.
 
-**Estimated effort**: 1 session.
+**Estimated effort**: 1 session of pure tuning, more if we introduce a weapon / level scaling abstraction.
 
 ---
 
 ## Roadmap (ordered, but not strict)
 
 ### Soon — next 3–5 sessions
-- [ ] Camera follow + larger maps (above)
-- [ ] Multi-floor descent (above)
+- [ ] Health potions as items (above)
+- [ ] Skill / class balance pass (above)
 - [ ] **Real corpse-run death**: replace "regen on death" with corpse drop, XP loss, return-to-town. Town doesn't exist yet so this is multi-step.
-- [ ] **Weighted enemy rolls**: replace hardcoded `Wolf.Definition` in spawn with a weighted draw from `Registries.Enemies.All.Where(e => e.ZoneIds.Contains(zone.Id))` using `EnemyDefinition.RarityWeight`.
 - [ ] **Cellular automata roughening for Wolfwood floor edges** + flood-fill connectivity repair.
-- [ ] **More AI behaviors**: ranged attackers (`ranged_caster`?), pack-mob coordination, fleeing-when-low-HP. Each gets a new `IEnemyAi` impl + tag mapping in `Enemy.ResolveAi`.
+- [ ] **Distinct boss-anchor tile**: today the Threshold doubles as boss-spawn marker; once descent meets boss arenas they can't be the same.
+- [ ] **Pack composition rolls**: today every BSP slot rolls a single weighted draw; deep-floor variety would benefit from "mixed packs" (e.g., 2 pups + 1 howler around the same anchor).
+- [ ] **Per-zone weight curves vs flat depth scaling**: spawn weights could shift with depth (e.g., pups dominate F1–F3, dires + howlers ramp F5+). Currently weights are floor-invariant.
 
 ### Mid-term — skills and loot
 - [ ] **All four classes' starter skills** (~10 per class = ~40 skills) — wire into right-click skill slot for v0.
@@ -277,9 +440,16 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **No corpses / loot on death** — enemies just disappear when killed.
 - **Click-to-target ignores FOV** — Shift+click on enemy still works at any distance regardless of visibility; click-to-walk targets and `FindLiveEnemyAt` consult position only. Now that the player can take damage, this lets you stand-attack unseen wolves through walls — worth tightening soon.
 - **Enemy↔enemy collision doesn't exist** — multiple wolves chasing the player will overlap on the same tile when they reach melee range. Visual stacking only; doesn't break gameplay.
-- **Death → free regen with full HP** — placeholder until corpse-run / XP-loss death lands.
-- **Enemy spawns hardcoded to Wolf** — should roll from `Registries.Enemies.All.Where(ZoneIds contains zone.Id)` weighted by `RarityWeight`. Small follow-up.
-- **Boss anchor uses Threshold tile as a placeholder** — when descent lands, Threshold becomes the next-floor stair, so we'll need a distinct tile (or a marker layer) for boss-spawn points. Today the player can walk onto the Threshold and nothing happens.
+- **Death → free regen with full HP, same floor** — placeholder until corpse-run / XP-loss death lands. Should probably reset to F1 (or town, when town exists) instead of staying mid-descent.
+- **`EnemyDefinition.ZoneIds` is a string array, no compile-time check** — typoing a zone id silently makes an enemy un-spawnable. Worth a typed `ZoneRef` or registry-validation pass at startup once the zone count grows.
+- **`EnemyDefinition.AiTag` is a string, no compile-time check** — same issue as ZoneIds. The `Enemy.ResolveAi` switch throws at first spawn if the tag is wrong, but it'd be nicer to fail at content-init time.
+- **No projectile entities for ranged attacks yet** — the howler's hitscan damage gives no spatial cue for the attack itself; the player only knows damage happened from the HitFeedback flash + number. A short glyph trail along the LOS line (or a real projectile entity that travels) is the natural follow-up.
+- **Stat scaling is single-zone, single-curve** — `HpScalePerFloor` / `DmgScalePerFloor` are global. Different zones (Drowned Hall, Hollow Court, etc.) will likely want their own curves, and "elite" enemies probably shouldn't scale linearly the same way commons do.
+- **Pack spawn doesn't preserve formation across regen** — a pup pack that was a tight 3-cluster at spawn time can scatter as the AIs chase the player. Future "alpha + pack" mechanics may want the pack to stick together.
+- **Cleave feels underpowered vs auto-attack at low enemy counts** — 10 dmg × N adjacent enemies on a 1.0s cooldown for 10 Rage vs the auto-attack's 10 dmg single-target on 0.8s for free. Math wins for Cleave only at 3+ adjacent enemies, and even there it doesn't *feel* like a payoff. Wants a class-balancing pass — bigger Cleave damage, knockback, or a stagger window — once more skills land and the resource economy is tunable in context.
+- **Threshold tile is the descent trigger AND the BSP boss-anchor marker** — these will conflict the moment boss arenas land (you'd descend onto the boss tile instead of fighting). Need a distinct boss-spawn tile (or a sidecar marker layer on Map) before the Wolf-Mother arena.
+- **Per-floor depth is plumbed but unused** — every floor generates with identical density and stat pool regardless of `floor` value. Scaling is the second item in Up next.
+- **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
 - **Cellular automata pass for forest feel deferred** — listed under Polish / juice. Needs flood-fill connectivity repair before BSP+CA is safe.
 - **Doors at room↔corridor junctions deferred** — placed deliberately later (boss-arena gates, town buildings). Wolfwood gets none.
 
@@ -324,20 +494,26 @@ src/Tarpg/
   Combat/
     CombatController.cs               auto-attack target + cooldown + ForceStand flag
   UI/
-    GameScreen.cs                     orchestrator — input, render, tick
+    GameScreen.cs                     orchestrator — input, render, tick (top HUD + bottom panel children)
     Effects/
       HitFeedback.cs                  flash + damage numbers + kill burst + hit-stop
+      ClickIndicator.cs               brief "+" pulse on left-button release
+      StatusPanel.cs                  HP orb + resource orb + 4 skill slots, bottom bar overlay
+      SkillVfx.cs                     area-highlight tints + screen shake + screen flash for skills
   Enemies/
-    EnemyDefinition.cs / Wolf.cs      registry-discovered enemy data
+    EnemyDefinition.cs                registry schema — id, name, stats, AiTag, ZoneIds, RarityWeight, MoveSpeed, AttackCooldown, PackSize
+    Wolf.cs / WolfPup.cs / DireWolf.cs / Wolfshade.cs / Howler.cs    Wolfwood enemy definitions (5 tiers)
     Ai/
       IEnemyAi.cs                     strategy interface — Tick(self, player, map, dt, aspect)
-      MeleeChargerAi.cs               Wolf brain: FOV-aggro w/ 3s memory, A* chase, 0.8s swing
+      MeleeChargerAi.cs               Wolf / pup / dire wolf brain: FOV-aggro w/ 3s memory, A* chase, melee swing
+      SkirmisherAi.cs                 Wolfshade brain: bite + retreat 4 tiles for 0.6s, re-engage
+      RangedKiterAi.cs                Howler brain: kite at 4–6 tile band, hitscan damage on LOS
   Entities/
     Entity.cs                         base — ContinuousPosition, Health, IsDead, TakeDamage
     Player.cs                         walker class, level, resource
     Enemy.cs                          wraps EnemyDefinition
   Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker
-  Skills/                             Definition, ISkillBehavior, Cleave
+  Skills/                             Definition, ISkillBehavior, ISkillVfx, Cleave, HeavyStrike, Charge, WarCry, Whirlwind
   Classes/                            WalkerClassDefinition, Reaver/Hunter/Cipher/Speaker
   Bosses/                             BossDefinition, WolfMother stub
   Modifiers/                          ModifierDefinition, IModifierBehavior, BurningFloor

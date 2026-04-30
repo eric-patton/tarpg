@@ -3,9 +3,9 @@ namespace Tarpg.World.Generation;
 // Strategy reference held by ZoneDefinition.Generator. Mirrors the
 // ISkillBehavior / ILegendaryEffect / IModifierBehavior pattern.
 //
-// The eventual `floor: int` parameter for multi-floor descent is a one-line
-// addition to this signature plus its call sites — accepted future churn.
+// floor is the descent depth (1-indexed). Reserved for per-floor difficulty
+// / density / size scaling; current generators may ignore it.
 public interface IZoneGenerator
 {
-    GeneratedFloor Generate(int width, int height, int seed);
+    GeneratedFloor Generate(int width, int height, int seed, int floor);
 }

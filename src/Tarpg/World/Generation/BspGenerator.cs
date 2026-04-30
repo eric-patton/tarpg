@@ -19,16 +19,32 @@ public sealed class BspGenerator : IZoneGenerator
     private const int MinRoomHeight = 3;
     private const int RoomEdgeMargin = 1;
 
-    private const int MinSpawnDistanceFromEntry = 6;
-    private const int MaxEnemiesPerFloor = 8;
+    // Chebyshev tiles between the entry and any spawn room's center. Below
+    // the threshold the room gets dropped from the candidate pool, so the
+    // player has a few-tile breather before encountering enemies. Used as a
+    // *room-level* check so we don't waste 20 random attempts on a room
+    // that's entirely too close.
+    private const int MinSpawnDistanceFromEntry = 4;
+
+    // Spawn slot count = the number of (center, def) decisions the spawn
+    // pipeline makes per floor. With horde packs (PackSize > 1) one slot can
+    // expand to several actual enemies, so this is an upper bound on the
+    // *spawn calls*, not on the live-enemy count.
+    private const int MaxEnemySlotsBase = 6;
+    private const int MaxEnemySlotsCap = 12;
 
     // Force a split direction when a leaf is markedly wider than tall (or
     // vice versa). Below the threshold, the split direction is random.
     private const float SplitAspectRatio = 1.25f;
 
-    public GeneratedFloor Generate(int width, int height, int seed)
+    public GeneratedFloor Generate(int width, int height, int seed, int floor)
     {
         var rng = new Random(seed);
+
+        // Slot count ramps with descent depth, capped so even endgame floors
+        // don't produce arbitrarily large hordes. Stat scaling (HP/Damage
+        // multiplier) is applied separately at spawn time by GameScreen.
+        var maxEnemySlots = Math.Min(MaxEnemySlotsCap, MaxEnemySlotsBase + floor);
 
         // Start with a wall-filled grid; we carve floors out of it.
         var map = new Map(width, height, TileTypes.Wall);
@@ -61,6 +77,12 @@ public sealed class BspGenerator : IZoneGenerator
         var entryRoom = rooms[0];
         var entry = RandomWalkableInRect(map, entryRoom, rng);
 
+        // Connectivity should be guaranteed by construction now that
+        // corridors target room midpoints, but flood-fill from the entry
+        // and verify before we ship the floor — surfaces the seed for
+        // repro if a future change reintroduces a topology bug.
+        VerifyAllRoomsReachable(map, entry, rooms, seed);
+
         // Boss anchor = a random walkable cell in the room farthest (by
         // chebyshev distance of room centers) from the entry room. Marked
         // with a Threshold tile so the player can see "this is where the
@@ -70,7 +92,7 @@ public sealed class BspGenerator : IZoneGenerator
         map.SetTile(bossAnchor, TileTypes.Threshold);
 
         var spawns = ChooseEnemySpawns(
-            map, rooms, entryRoom, bossRoom, entry, bossAnchor, rng);
+            map, rooms, entryRoom, bossRoom, entry, bossAnchor, maxEnemySlots, rng);
 
         return new GeneratedFloor
         {
@@ -131,10 +153,18 @@ public sealed class BspGenerator : IZoneGenerator
             var room = GenerateRoom(node.Bounds, rng);
             CarveRoom(map, room);
             rooms.Add(room);
+            node.Room = room;
             return;
         }
         if (node.Left is not null) GenerateAndCarveRooms(node.Left, map, rng, rooms);
         if (node.Right is not null) GenerateAndCarveRooms(node.Right, map, rng, rooms);
+
+        // Inherit a representative room from the left subtree (or the right
+        // if the left is somehow null). ConnectSubtree uses this when the
+        // parent corridor is between this node and its sibling — picking
+        // a real room midpoint guarantees the corridor lands inside walkable
+        // space rather than dead-ending in a wall.
+        node.Room = node.Left?.Room ?? node.Right!.Room;
     }
 
     private static Rect GenerateRoom(Rect leaf, Random rng)
@@ -164,12 +194,13 @@ public sealed class BspGenerator : IZoneGenerator
         if (node.IsLeaf) return;
         if (node.Left is not null && node.Right is not null)
         {
-            // Midpoint of leaf bounding boxes (not rooms) — produces
-            // corridors that don't always exit the dead center of a room
-            // but are deterministic without descending the tree to find
-            // the rooms again.
-            var a = MidpointOf(node.Left.Bounds);
-            var b = MidpointOf(node.Right.Bounds);
+            // Midpoint of representative ROOMS (not leaf bounding boxes) so
+            // the corridor endpoints are guaranteed to fall inside floor
+            // tiles. The previous bounds-midpoint approach could land both
+            // endpoints in the wall margin between the room and the leaf
+            // edge, leaving the room sealed.
+            var a = MidpointOf(node.Left.Room);
+            var b = MidpointOf(node.Right.Room);
             CarveCorridorL(map, a, b, rng);
         }
         if (node.Left is not null) ConnectSubtree(node.Left, map, rng);
@@ -232,6 +263,49 @@ public sealed class BspGenerator : IZoneGenerator
             $"No walkable tile in room ({rect.X},{rect.Y}) {rect.Width}x{rect.Height}.");
     }
 
+    // BFS from `entry` over walkable tiles. Throws if any room has no tile
+    // reachable from the entry — the caller's BSP / corridor logic produced
+    // a disconnected map. Seed is in the message so the floor can be reproduced.
+    private static void VerifyAllRoomsReachable(Map map, Position entry, List<Rect> rooms, int seed)
+    {
+        var visited = new bool[map.Width, map.Height];
+        var queue = new Queue<Position>();
+        queue.Enqueue(entry);
+        visited[entry.X, entry.Y] = true;
+
+        while (queue.Count > 0)
+        {
+            var p = queue.Dequeue();
+            TryEnqueue(map, visited, queue, new Position(p.X - 1, p.Y));
+            TryEnqueue(map, visited, queue, new Position(p.X + 1, p.Y));
+            TryEnqueue(map, visited, queue, new Position(p.X, p.Y - 1));
+            TryEnqueue(map, visited, queue, new Position(p.X, p.Y + 1));
+        }
+
+        foreach (var room in rooms)
+        {
+            var anyReached = false;
+            for (var x = room.X; x < room.X + room.Width && !anyReached; x++)
+            for (var y = room.Y; y < room.Y + room.Height && !anyReached; y++)
+            {
+                if (visited[x, y]) anyReached = true;
+            }
+            if (!anyReached)
+                throw new InvalidOperationException(
+                    $"BSP produced a disconnected room at ({room.X},{room.Y}) " +
+                    $"{room.Width}x{room.Height} (seed={seed}). " +
+                    "ConnectSubtree corridor logic regressed.");
+        }
+    }
+
+    private static void TryEnqueue(Map map, bool[,] visited, Queue<Position> queue, Position p)
+    {
+        if (!map.IsWalkable(p)) return;
+        if (visited[p.X, p.Y]) return;
+        visited[p.X, p.Y] = true;
+        queue.Enqueue(p);
+    }
+
     private static Rect FarthestRoom(List<Rect> rooms, Rect from)
     {
         var fromCenter = new Position(from.CenterX, from.CenterY);
@@ -249,36 +323,80 @@ public sealed class BspGenerator : IZoneGenerator
 
     private static IReadOnlyList<Position> ChooseEnemySpawns(
         Map map, List<Rect> rooms, Rect entryRoom, Rect bossRoom,
-        Position entry, Position bossAnchor, Random rng)
+        Position entry, Position bossAnchor, int maxSlots, Random rng)
     {
         var occupied = new HashSet<Position> { entry, bossAnchor };
         var spawns = new List<Position>();
 
+        // Candidate pool: every non-entry, non-boss room whose center is at
+        // least MinSpawnDistanceFromEntry chebyshev tiles from the entry.
+        // Skipping by room center (instead of per-tile) means a too-close
+        // room never enters the pool and never wastes 20 attempts.
+        var candidateRooms = new List<Rect>();
         foreach (var room in rooms)
         {
-            if (spawns.Count >= MaxEnemiesPerFloor) break;
             if (room.Equals(entryRoom) || room.Equals(bossRoom)) continue;
+            var center = new Position(room.CenterX, room.CenterY);
+            if (entry.ChebyshevTo(center) < MinSpawnDistanceFromEntry) continue;
+            candidateRooms.Add(room);
+        }
+        if (candidateRooms.Count == 0) return spawns;
 
-            var count = rng.Next(1, 3); // 1 or 2 per room
-            for (var i = 0; i < count; i++)
-            {
-                if (spawns.Count >= MaxEnemiesPerFloor) break;
-                for (var attempt = 0; attempt < 20; attempt++)
-                {
-                    var x = rng.Next(room.X, room.X + room.Width);
-                    var y = rng.Next(room.Y, room.Y + room.Height);
-                    var p = new Position(x, y);
-                    if (!map.IsWalkable(p)) continue;
-                    if (occupied.Contains(p)) continue;
-                    if (entry.ChebyshevTo(p) < MinSpawnDistanceFromEntry) continue;
-                    occupied.Add(p);
-                    spawns.Add(p);
-                    break;
-                }
-            }
+        // First pass: one spawn per candidate room, in shuffled order so we
+        // don't bias toward whichever rooms BSP traversal happened to visit
+        // first. Guarantees that — up to the cap — every reachable
+        // far-enough room gets at least one inhabitant. No more dead empty
+        // rooms while the cap is consumed by the first three iterated.
+        ShuffleInPlace(candidateRooms, rng);
+        foreach (var room in candidateRooms)
+        {
+            if (spawns.Count >= maxSlots) break;
+            TryPlaceInRoom(map, room, occupied, spawns, rng);
+        }
+
+        // Second pass: remaining slots distributed randomly across the same
+        // pool. Some rooms end up with 2–3 spawns (clumps); most have 1.
+        // Bail when consecutive picks fail — that means the rooms are
+        // saturated and forcing more would loop forever.
+        var consecutiveFailures = 0;
+        var failureLimit = candidateRooms.Count * 2;
+        while (spawns.Count < maxSlots && consecutiveFailures < failureLimit)
+        {
+            var room = candidateRooms[rng.Next(candidateRooms.Count)];
+            if (TryPlaceInRoom(map, room, occupied, spawns, rng))
+                consecutiveFailures = 0;
+            else
+                consecutiveFailures++;
         }
 
         return spawns;
+    }
+
+    private static bool TryPlaceInRoom(
+        Map map, Rect room, HashSet<Position> occupied,
+        List<Position> spawns, Random rng)
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var x = rng.Next(room.X, room.X + room.Width);
+            var y = rng.Next(room.Y, room.Y + room.Height);
+            var p = new Position(x, y);
+            if (!map.IsWalkable(p)) continue;
+            if (occupied.Contains(p)) continue;
+            occupied.Add(p);
+            spawns.Add(p);
+            return true;
+        }
+        return false;
+    }
+
+    private static void ShuffleInPlace<T>(IList<T> list, Random rng)
+    {
+        for (var i = list.Count - 1; i > 0; i--)
+        {
+            var j = rng.Next(i + 1);
+            (list[i], list[j]) = (list[j], list[i]);
+        }
     }
 
     // ---- Internal helpers ----
@@ -288,6 +406,14 @@ public sealed class BspGenerator : IZoneGenerator
         public Rect Bounds;
         public BspNode? Left;
         public BspNode? Right;
+
+        // Representative room for this subtree. For a leaf, it's the room
+        // carved inside the leaf's bounds. For an internal node, it's
+        // inherited from the left subtree (any leaf-room works since the
+        // subtree is connected internally) so the parent's corridor has a
+        // guaranteed-walkable point to aim at.
+        public Rect Room;
+
         public BspNode(Rect bounds) { Bounds = bounds; }
         public bool IsLeaf => Left is null && Right is null;
     }
