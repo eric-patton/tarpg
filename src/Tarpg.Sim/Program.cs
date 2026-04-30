@@ -95,14 +95,22 @@ public static class Program
         // before we start logging totals).
         ContentInitializer.Initialize();
 
+        var classDef = Registries.Classes.Get(opts.ClassId);
+        var playerMaxHp = classDef.BaseHealth;
+
         var allResults = new List<RunRecord>();
         var startedAt = DateTime.UtcNow;
+        var totalRuns = (opts.FloorMax - opts.FloorMin + 1) * opts.SeedCount;
 
         Console.WriteLine($"# tarpg-sim: zone={opts.ZoneId} class={opts.ClassId} pilot={opts.PilotId} " +
                           $"floors={opts.FloorMin}-{opts.FloorMax} seeds={opts.SeedCount}");
+        Console.WriteLine($"# total runs: {totalRuns}");
 
         for (var floor = opts.FloorMin; floor <= opts.FloorMax; floor++)
         {
+            var floorRows = new List<RunRecord>();
+            var floorStartedAt = DateTime.UtcNow;
+
             for (var seedIdx = 0; seedIdx < opts.SeedCount; seedIdx++)
             {
                 var seed = opts.SeedBase + seedIdx;
@@ -117,12 +125,28 @@ public static class Program
                 var pilot = MakePilot(opts.PilotId);
                 var result = global::Tarpg.Sim.TickRunner.Run(cfg, pilot);
 
-                allResults.Add(new RunRecord(seed, floor, result));
+                var record = new RunRecord(seed, floor, result);
+                allResults.Add(record);
+                floorRows.Add(record);
+
+                Console.WriteLine(SimProgress.FormatRunLine(
+                    index: allResults.Count - 1,
+                    total: totalRuns,
+                    floor: floor, seed: seed,
+                    result: result, playerMaxHp: playerMaxHp));
             }
+
+            var floorElapsed = (DateTime.UtcNow - floorStartedAt).TotalSeconds;
+            var cleared = floorRows.Count(r => r.Result.Outcome == SimOutcome.PlayerCleared);
+            var died    = floorRows.Count(r => r.Result.Outcome == SimOutcome.PlayerDied);
+            var timeout = floorRows.Count(r => r.Result.Outcome == SimOutcome.Timeout);
+            var killsAvg = floorRows.Average(r => (double)r.Result.EnemiesKilled);
+            Console.WriteLine(SimProgress.FormatFloorSummary(
+                floor, floorRows.Count, cleared, died, timeout, killsAvg, floorElapsed));
         }
 
         var elapsedSec = (DateTime.UtcNow - startedAt).TotalSeconds;
-        Console.WriteLine($"# {allResults.Count} runs completed in {elapsedSec:F1}s");
+        Console.WriteLine($"# {allResults.Count} runs completed in {SimProgress.FormatWallTime(elapsedSec)}");
 
         if (opts.OutPath is not null)
             WriteCsv(opts.OutPath, allResults);

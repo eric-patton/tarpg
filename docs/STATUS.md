@@ -169,6 +169,11 @@ When you `run`, you get:
 
 ## Recently completed (newest first)
 
+### tarpg-sim per-run progress output
+- **`Sim/SimProgress.cs`** (new) — pure-logic formatters for the CLI runner. `FormatRunLine` emits `[  1/250] F1 seed=1000 cleared in   4.2s (12 kills, hp=65/65)`-style padded lines; `FormatFloorSummary` emits an end-of-floor banner with cleared / died / timeout percentages and wall-clock; `FormatWallTime` does seconds → `Xm YYs` for sweeps that span minutes.
+- **`Tarpg.Sim/Program.cs`** — sweep loop now prints a progress line per completed run plus a floor-summary banner after each depth's runs land. Removes the "wait 30+ minutes for any output" rough edge that surfaced when the first big sweep was running silently. CSV write + final aggregate table still happen at the end.
+- **Tests** — `Sim/SimProgressTests.cs` pins the line shapes (cleared-run, died-run, index-padding, floor-summary, wall-time renderings) so future format tweaks don't silently shift the schema. Per the CLAUDE.md tests-with-features rule.
+
 ### Hunter — second playable class with full Focus kit
 - **`Skills/QuickShot.cs`** (new, M2) — hitscan single-target shot. Range-gated to chebyshev 6 from caster + LOS-gated via `TileLineOfSight` so an arrow into a wall does no damage. Picks the nearest enemy within `TargetRadius=1` of the cursor cell so a near-miss click still connects. 12 dmg, 0 cost, 0.5s cd, glyph `'`.
 - **`Skills/Volley.cs`** (new, Q) — 3×3 chebyshev-1 AOE at the cursor. Range 6, LOS-gated from caster to cursor (the volley as a whole; individual splash hits don't re-check LOS per target). 8 dmg per hit, 12 Focus, 1.0s cd, glyph `"`.
