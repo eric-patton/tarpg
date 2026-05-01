@@ -41,6 +41,7 @@ public sealed class GameLoopController
     public Player Player => _player;
     public List<Enemy> Enemies => _enemies;
     public List<FloorItem> FloorItems => _floorItems;
+    public List<Corpse> Corpses => _corpses;
     public Map Map { get => _map; set => _map = value; }
     public MovementController Movement => _movement;
     public CombatController Combat => _combat;
@@ -54,6 +55,7 @@ public sealed class GameLoopController
     private readonly Player _player;
     private readonly List<Enemy> _enemies;
     private readonly List<FloorItem> _floorItems;
+    private readonly List<Corpse> _corpses;
     private readonly MovementController _movement;
     private readonly CombatController _combat;
     private Map _map;
@@ -71,11 +73,13 @@ public sealed class GameLoopController
         Map map,
         MovementController movement,
         CombatController combat,
-        List<FloorItem>? floorItems = null)
+        List<FloorItem>? floorItems = null,
+        List<Corpse>? corpses = null)
     {
         _player = player;
         _enemies = enemies;
         _floorItems = floorItems ?? new List<FloorItem>();
+        _corpses = corpses ?? new List<Corpse>();
         _movement = movement;
         _combat = combat;
         _map = map;
@@ -211,6 +215,9 @@ public sealed class GameLoopController
         // kill at melee range) gets picked up next frame without forcing
         // the player to step away and back.
         TryPickupFloorItems();
+        // Same for corpses — the player's own dead-self drops at re-spawn,
+        // and walking onto its tile drains the snapshot back into inventory.
+        TryPickupCorpses();
 
         if (!frozen)
         {
@@ -245,6 +252,19 @@ public sealed class GameLoopController
             if (_floorItems[i].Position != playerTile) continue;
             _player.Inventory.Add(_floorItems[i].Item);
             _floorItems.RemoveAt(i);
+        }
+    }
+
+    private void TryPickupCorpses()
+    {
+        if (_corpses.Count == 0) return;
+        var playerTile = _player.Position;
+        for (var i = _corpses.Count - 1; i >= 0; i--)
+        {
+            var corpse = _corpses[i];
+            if (corpse.Position != playerTile) continue;
+            _player.Inventory.Restore(corpse.HpPotionCount, corpse.ResourcePotionCount);
+            _corpses.RemoveAt(i);
         }
     }
 

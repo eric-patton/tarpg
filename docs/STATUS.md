@@ -1,6 +1,6 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-30 (class-select screen + PowerShell game-automation harness)
+> **Updated**: 2026-04-30 (corpse-run death loop)
 > **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); two playable classes (Reaver melee + Hunter ranged), each with a full 5-slot kit (M2/Q/W/E/R) wired via `WalkerClassDefinition.StartingSlotSkills`; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite (skills, AIs, BSP, Items, Movement, Combat, slot-wiring) and a `tarpg-sim` CLI that sweeps (floor × seed × class) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
@@ -169,6 +169,15 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Corpse-run death loop (v0)
+- **Replaces** the placeholder "die → regen current floor at full HP" with a real consequence: on death, the player's potion stockpile gets snapshotted, inventory drained, depth reset to F1, and a `Corpse` entity spawned one tile from the new entry holding the snapshot. Walking onto the corpse restores the potions.
+- **`Entities/Corpse.cs`** (new) — `Entity` subclass with `HpPotionCount` + `ResourcePotionCount` snapshot fields, glyph `%`, dim red color, `RenderLayer = 25` (sits between FloorItems at 20 and creatures at 50 so it draws on top of any potions on the same tile but live actors still draw on top). Separate from `FloorItem` because the semantics differ — a FloorItem is "one ItemDefinition you Add() to inventory," a Corpse is a multi-payload bundle that gets drained. Future equipment drops slot in as additional fields here without touching the FloorItem pipeline.
+- **`Inventory/Inventory.cs`** — `Restore(hp, res)` (additive — picking up a potion post-respawn before reaching the corpse doesn't get clobbered) and `DrainAll() → (hp, res)` (snapshot + zero, used by the death pipeline).
+- **`Core/GameLoopController.cs`** — accepts an optional shared `List<Corpse>` ctor arg, exposes `Corpses`, runs `TryPickupCorpses` in `Tick` alongside `TryPickupFloorItems`. Pickup logic: player tile == corpse tile → `Inventory.Restore(...)` → remove corpse from list. The reaping pattern from FloorItems is reused so visuals drop cleanly.
+- **`UI/GameScreen.cs`** — `RegenerateAfterDeath` now drains inventory, resets `_currentFloor = 1`, calls `LoadFloor(restoreFullHealth=true, "death")`, then spawns a Corpse at the first walkable chebyshev-1 neighbor of the entry tile (entry-adjacent so the player gets a beat to read "I died, my stuff dropped right there" before the auto-pickup fires next tick). LoadFloor was extended to clear corpses too — a chain death wipes the previous corpse, so you only ever recover from the most recent fall.
+- **What's deferred to bigger milestones**: XP loss + carried-equipment drop need the progression / equipment systems. The "true corpse-run" loop where you descend back to where you died and recover from the original tile needs persistent floor state (currently every floor regenerates fresh on entry). Both are GDD §13 items; the v0 loop is sufficient to validate the mechanic and the UI / pickup pipeline.
+- **Tests** — `Items/InventoryTests.cs` covers `DrainAll` returns snapshot + zeros counts, `Restore` is additive (regression for the post-respawn-pickup-then-corpse scenario). `Items/CorpsePickupTests.cs` (new) drives `GameLoopController.Tick` directly: player on corpse tile → restore + remove, player on different tile → no-op, corpse-on-existing-inventory → additive merge. The death-trigger / floor-reset / corpse-spawn flow lives in GameScreen and is UI-coupled — verified via the `scripts/` harness on `run`.
 
 ### PowerShell game-automation harness — screenshot + input from outside the game
 - **`scripts/launch-debug.ps1`** — builds, starts the game exe with the project's working dir, polls until the `TARPG` window appears, prints the PID. Refuses to launch when a TARPG window is already running so debug iteration doesn't pile up zombie windows.
@@ -480,22 +489,12 @@ When you `run`, you get:
 
 **Estimated effort**: 1 focused tuning session per class plus the weapon / level scaling abstraction (~half a session) if we go that route.
 
-### 2. Real corpse-run death
-**Goal**: replace "regen on death, same floor, full HP" with corpse drop + XP loss + return-to-town. Town doesn't exist yet so this couples to the town milestone — but the death loop itself can land first as "die → reset to F1 with carried inventory minus a dropped item."
-
-**Approach**: on death, spawn a corpse FloorItem at the death tile carrying the player's potions + (later) a dropped equipment item. Reset to F1 with full HP + empty inventory. Walking onto the corpse retrieves the items.
-
-**Files to touch**: `UI/GameScreen.cs` (replace `RegenerateAfterDeath` semantics), new `Entities/Corpse.cs` (or reuse FloorItem), `Inventory/Inventory.cs` (drop / restore methods).
-
-**Estimated effort**: 1 session for the corpse-only loop; town integration waits.
-
 ---
 
 ## Roadmap (ordered, but not strict)
 
 ### Soon — next 3–5 sessions
 - [ ] Skill / class balance pass (above)
-- [ ] Real corpse-run death (above)
 - [ ] **Cellular automata roughening for Wolfwood floor edges** + flood-fill connectivity repair.
 - [ ] **Distinct boss-anchor tile**: today the Threshold doubles as boss-spawn marker; once descent meets boss arenas they can't be the same.
 - [ ] **Pack composition rolls**: today every BSP slot rolls a single weighted draw; deep-floor variety would benefit from "mixed packs" (e.g., 2 pups + 1 howler around the same anchor).
@@ -547,7 +546,7 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **Half-step zoom (1.5×, 2.5×) is fuzzy** with the 12×12 Milazzo font. Integer multiples (1×, 2×, 3×) are crisp. Acceptable trade-off; can document or remove half-steps if it bothers user.
 - **Mouse hover doesn't preview attack target** — would help readability ("am I going to engage this wolf if I click here?")
 - **No save/load yet** — character persists only within the running session.
-- **No player corpse on death** — when the player dies, the floor regenerates at full HP (corpse-run loop is item #3 in Up next). Enemy kills DO drop loot (HP / Resource potions at `LootDropChance = 0.08`).
+- **Corpse-run is v0** — death drops a Corpse holding the player's potion stockpile and resets depth to F1 with full HP / empty inventory. Walk onto the corpse to recover potions. What's still missing: XP loss (no progression yet), equipment drop (no equipment yet), and "true" corpse-run where the corpse stays on the death floor (would require persistent floor state — every floor regenerates fresh on entry today). Chain deaths between resets wipe the previous corpse, so only the most recent fall is recoverable.
 - **Pickup is automatic on step** — walking onto a `FloorItem` tile vacuums it into inventory with no preview or confirm. Fine for potions today; later equipment drops may want a hold-Alt-to-highlight + click-to-pick-up flow per GDD §6.
 - **Drink cooldown is per-potion-type, not global** — you can chain HP + Resource potions in the same frame since `_hpPotionCooldown` and `_resourcePotionCooldown` are independent. May want a unified "consumable busy" gate.
 - **Click-to-target ignores FOV** — Shift+click on enemy still works at any distance regardless of visibility; click-to-walk targets and `FindLiveEnemyAt` consult position only. Now that the player can take damage, this lets you stand-attack unseen wolves through walls — worth tightening soon.
@@ -628,6 +627,7 @@ src/Tarpg/
     Player.cs                         walker class, level, resource, Inventory
     Enemy.cs                          wraps EnemyDefinition
     FloorItem.cs                      Entity subclass for items on the ground (zIndex 20)
+    Corpse.cs                         Entity subclass for the player's death drop (zIndex 25)
   Inventory/
     Inventory.cs                      first-cut consumables-only — HP / Resource potion counts
   Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker, Potions, LootDropper

@@ -35,4 +35,23 @@ public sealed class Inventory
         }
         return false;
     }
+
+    // Used by the corpse-pickup pipeline: deposit potion counts back into
+    // the inventory. Additive, so picking up a corpse stack on top of
+    // potions you've grabbed since respawn doesn't overwrite them.
+    public void Restore(int hpPotionCount, int resourcePotionCount)
+    {
+        HealthPotionCount += hpPotionCount;
+        ResourcePotionCount += resourcePotionCount;
+    }
+
+    // Snapshot + zero — the death pipeline calls this to capture what
+    // the player was carrying before re-spawning with an empty bag.
+    public (int HpPotionCount, int ResourcePotionCount) DrainAll()
+    {
+        var snapshot = (HealthPotionCount, ResourcePotionCount);
+        HealthPotionCount = 0;
+        ResourcePotionCount = 0;
+        return snapshot;
+    }
 }

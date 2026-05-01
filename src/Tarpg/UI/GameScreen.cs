@@ -132,6 +132,14 @@ public sealed class GameScreen : SadConsole.Console
     private readonly List<FloorItem> _floorItems = new();
     private readonly Dictionary<FloorItem, SadEntity> _floorItemVisuals = new();
 
+    // Player-death drops. Same shared-list pattern as floor items so the
+    // loop's TryPickupCorpses mutates exactly what we render. Future
+    // multi-corpse scenarios (chain-deaths between resets, town-corpses)
+    // become "just don't clear this on LoadFloor" rather than reworking
+    // the pickup pipeline.
+    private readonly List<Corpse> _corpses = new();
+    private readonly Dictionary<Corpse, SadEntity> _corpseVisuals = new();
+
     // Chance per enemy kill that something drops. 0.08 = roughly one drop
     // every 12 kills; tunable from sim runs once equipment loot lands too.
     private const float LootDropChance = 0.08f;
@@ -245,7 +253,7 @@ public sealed class GameScreen : SadConsole.Console
         var classDef = Registries.Classes.Get(classId ?? RenderSettings.StartingClassId);
         _player = Player.Create(classDef, floor.Entry);
 
-        _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat, _floorItems);
+        _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat, _floorItems, _corpses);
         WireSlotSkills(_loop, classDef);
 
         _map.ComputeFovFor(_player.Position, GameLoopController.FovRadius);
@@ -447,11 +455,52 @@ public sealed class GameScreen : SadConsole.Console
         LoadFloor(restoreFullHealth: false, reason: "descent");
     }
 
-    // Real corpse-run / XP-loss death is deferred — for now, dying just
-    // regenerates the current floor at full HP.
+    // Death loop v0: snapshot the player's inventory, reset depth to F1,
+    // load a fresh map, drop a corpse holding the snapshot one tile from
+    // the entry. Walking onto the corpse restores potions via
+    // GameLoopController.TryPickupCorpses. XP loss + equipment drops land
+    // when the progression / equipment systems do; this is the corpse
+    // mechanic in isolation.
+    //
+    // Putting the corpse at entry-adjacent (not ON entry) means the player
+    // gets one frame to read "I died, my stuff dropped right there" before
+    // the auto-pickup fires — visible feedback over instant restoration.
     private void RegenerateAfterDeath()
     {
+        var loot = _player.Inventory.DrainAll();
+        _currentFloor = 1;
         LoadFloor(restoreFullHealth: true, reason: "death");
+
+        if (loot.HpPotionCount > 0 || loot.ResourcePotionCount > 0)
+            SpawnCorpseNear(_player.Position, loot.HpPotionCount, loot.ResourcePotionCount);
+    }
+
+    private void SpawnCorpseNear(Position center, int hpPotions, int resourcePotions)
+    {
+        // Try each chebyshev-1 neighbor of the entry; first walkable one
+        // wins. Falls back to the entry itself if nothing's clear (the
+        // BSP entry is always carved walkable, so this is just a safety).
+        var candidates = new[]
+        {
+            center.East, center.West, center.North, center.South,
+            center.East.North, center.East.South,
+            center.West.North, center.West.South,
+            center,
+        };
+        Position drop = center;
+        foreach (var c in candidates)
+        {
+            if (_map.IsWalkable(c)) { drop = c; break; }
+        }
+
+        var corpse = Corpse.CreateAt(drop, hpPotions, resourcePotions);
+        var visual = new SadEntity(corpse.Color, Color.Black, corpse.Glyph, zIndex: corpse.RenderLayer)
+        {
+            UsePixelPositioning = true,
+        };
+        _entityManager.Add(visual);
+        _corpses.Add(corpse);
+        _corpseVisuals[corpse] = visual;
     }
 
     // Tear down current enemies + transient effects, generate a fresh floor
@@ -472,6 +521,14 @@ public sealed class GameScreen : SadConsole.Console
             _entityManager.Remove(visual);
         _floorItems.Clear();
         _floorItemVisuals.Clear();
+
+        // Corpses also wiped — the death pipeline spawns the new corpse
+        // AFTER LoadFloor returns (see RegenerateAfterDeath). On a normal
+        // descent there's never a corpse alive.
+        foreach (var visual in _corpseVisuals.Values)
+            _entityManager.Remove(visual);
+        _corpses.Clear();
+        _corpseVisuals.Clear();
 
         _dashRemainingSec = 0f;
         _hpPotionCooldown = 0f;
@@ -565,6 +622,7 @@ public sealed class GameScreen : SadConsole.Console
 
         ReapDead();
         ReapPickedUpItems();
+        ReapPickedUpCorpses();
 
         // Drink-cooldown decay — independent of skill cooldowns, since they
         // gate consumable spam, not skill resource economy.
@@ -603,6 +661,7 @@ public sealed class GameScreen : SadConsole.Console
         SyncPlayerVisual();
         SyncEnemyVisuals();
         SyncFloorItemVisuals();
+        SyncCorpseVisuals();
         DrawHud();
 
         base.Update(delta);
@@ -842,6 +901,23 @@ public sealed class GameScreen : SadConsole.Console
         }
     }
 
+    // Mirrors ReapPickedUpItems for corpses — when the loop's
+    // TryPickupCorpses removes a corpse from the live list, drop its
+    // visual so the glyph disappears immediately on pickup.
+    private void ReapPickedUpCorpses()
+    {
+        if (_corpseVisuals.Count == 0) return;
+        var live = new HashSet<Corpse>(_corpses);
+        var orphaned = new List<Corpse>();
+        foreach (var c in _corpseVisuals.Keys)
+            if (!live.Contains(c)) orphaned.Add(c);
+        foreach (var c in orphaned)
+        {
+            if (_corpseVisuals.Remove(c, out var visual))
+                _entityManager.Remove(visual);
+        }
+    }
+
     private void SyncPlayerVisual() => SyncVisual(_player, _playerEntity);
 
     private void SyncEnemyVisuals()
@@ -854,6 +930,12 @@ public sealed class GameScreen : SadConsole.Console
     {
         foreach (var (item, visual) in _floorItemVisuals)
             SyncVisual(item, visual);
+    }
+
+    private void SyncCorpseVisuals()
+    {
+        foreach (var (corpse, visual) in _corpseVisuals)
+            SyncVisual(corpse, visual);
     }
 
     // ContinuousPosition is in tile-space, where (cx + 0.5, cy + 0.5) means the
