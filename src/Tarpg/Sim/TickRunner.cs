@@ -34,9 +34,10 @@ public static class TickRunner
 
         var player = Player.Create(classDef, generated.Entry);
         var enemies = new List<Enemy>();
+        var floorItems = new List<Tarpg.Entities.FloorItem>();
         var movement = new MovementController();
         var combat = new CombatController();
-        var loop = new GameLoopController(player, enemies, generated.Map, movement, combat);
+        var loop = new GameLoopController(player, enemies, generated.Map, movement, combat, floorItems);
 
         WireDefaultSkills(loop, classDef);
 
@@ -78,9 +79,28 @@ public static class TickRunner
         foreach (var enemy in enemies)
         {
             var id = enemy.Definition.Id;
+            var capturedEnemy = enemy;
             enemy.Damaged += (e, d) => damageDealt += d;
             enemy.Died += e =>
+            {
                 killsByEnemyId[id] = killsByEnemyId.GetValueOrDefault(id) + 1;
+                // Mirror GameScreen's loot-drop behavior so sim measures
+                // the same equipment economy as live play. Boss drops
+                // (Wolfbreaker) skip the random LootDropper roll —
+                // they're deterministic per the boss-loot contract.
+                if (capturedEnemy.Definition.IsBoss)
+                {
+                    if (Registries.Items.TryGet("wolfbreaker", out var loot))
+                        floorItems.Add(Tarpg.Entities.FloorItem.Create(
+                            loot, capturedEnemy.Position, new SadRogue.Primitives.Color(220, 180, 110)));
+                }
+                else
+                {
+                    var dropped = Tarpg.Items.LootDropper.RollDrop(
+                        capturedEnemy, rng, GameLoopController.LootDropChance);
+                    if (dropped is not null) floorItems.Add(dropped);
+                }
+            };
         }
 
         var ctx = new SimContext

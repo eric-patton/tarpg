@@ -20,4 +20,10 @@ public sealed class ItemDefinition : IRegistryEntry
 
     // Affix pool ids this base draws from (Magic/Rare items only).
     public IReadOnlyList<string> AffixPool { get; init; } = Array.Empty<string>();
+
+    // Flat damage added to the player's auto-attack while this item is
+    // equipped (Slot == Weapon). Future skill-damage scaling will read
+    // the same field — for v0 only auto-attack benefits. Default 0 so
+    // non-weapon items don't accidentally contribute damage.
+    public int WeaponDamageBonus { get; init; } = 0;
 }

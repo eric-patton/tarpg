@@ -38,6 +38,13 @@ public sealed class GameLoopController
 
     public const int FovRadius = 10;
 
+    // Per-enemy-kill drop chance for the random loot pool (potions +
+    // common weapons). Boss drops bypass this — they're deterministic.
+    // Lives here so GameScreen and the sim TickRunner share the same
+    // tunable; the sim's loot pickup pipeline depends on it being
+    // identical to live play to produce comparable balance data.
+    public const float LootDropChance = 0.08f;
+
     public Player Player => _player;
     public List<Enemy> Enemies => _enemies;
     public List<FloorItem> FloorItems => _floorItems;
@@ -307,7 +314,11 @@ public sealed class GameLoopController
         for (var i = _floorItems.Count - 1; i >= 0; i--)
         {
             if (_floorItems[i].Position != playerTile) continue;
-            _player.Inventory.Add(_floorItems[i].Item);
+            // Route through Player.PickUp so equipment hits the auto-
+            // equip path and consumables stack in inventory. Calling
+            // Inventory.Add directly would swallow weapon drops since
+            // Inventory only knows about consumables.
+            _player.PickUp(_floorItems[i].Item);
             _floorItems.RemoveAt(i);
         }
     }

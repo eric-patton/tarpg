@@ -15,6 +15,11 @@ public static class Wolfbreaker
         Glyph = ')',
         FlavorText = "carved by a hunter who could not stop",
         Effect = new WolfbreakerEffect(),
+        // Tuned to ~2x the next-tier Magic weapon (IronBlade +6) so the
+        // first-boss reward feels like a meaningful upgrade — auto-attack
+        // jumps from 16 dmg (IronBlade) to 22 dmg (Wolfbreaker), shifting
+        // the kit's DPS curve enough that the player notices on F6+.
+        WeaponDamageBonus = 12,
     };
 
     private sealed class WolfbreakerEffect : ILegendaryEffect

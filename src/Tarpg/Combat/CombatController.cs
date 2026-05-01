@@ -15,6 +15,9 @@ public sealed class CombatController
 {
     public const float MeleeRange = 1.4f;             // tiles (1 + a touch for diagonals)
     public const float AutoAttackCooldownSec = 0.8f;
+    // Unarmed baseline. Players read this through Player.WeaponDamage
+    // (which adds any equipped weapon's WeaponDamageBonus on top), so
+    // the const stays the source-of-truth for "what does a fist do."
     public const int BaseDamage = 10;
 
     public Entity? Target { get; private set; }
@@ -54,7 +57,11 @@ public sealed class CombatController
         var distance = Vector2.Distance(attacker.ContinuousPosition, Target!.ContinuousPosition);
         if (distance > MeleeRange) return false;
 
-        Target.TakeDamage(BaseDamage);
+        // Players add equipped-weapon bonus on top of the BaseDamage
+        // baseline; non-player attackers (none today, but defensive)
+        // fall back to BaseDamage so the system stays generic.
+        var dmg = attacker is Player p ? p.WeaponDamage : BaseDamage;
+        Target.TakeDamage(dmg);
         CooldownRemaining = AutoAttackCooldownSec;
 
         if (Target.IsDead) Target = null;

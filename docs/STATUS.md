@@ -1,6 +1,6 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-30 (Wolf-Mother boss arena on F5)
+> **Updated**: 2026-04-30 (equipment system v0 — weapon damage)
 > **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); two playable classes (Reaver melee + Hunter ranged), each with a full 5-slot kit (M2/Q/W/E/R) wired via `WalkerClassDefinition.StartingSlotSkills`; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite (skills, AIs, BSP, Items, Movement, Combat, slot-wiring) and a `tarpg-sim` CLI that sweeps (floor × seed × class) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
@@ -130,7 +130,9 @@ When you `run`, you get:
 | `GameLoopController.OutOfCombatRegenDelaySec` / `RegenPerSec` | `3.0f` / `5.0f` (HP/sec after 3s without damage) | `Core/GameLoopController.cs` |
 | `GameLoopController.ResourceGainPerAutoAttackHit` | `5` (Rage per landed auto-attack swing — Reaver) | same |
 | `WalkerClassDefinition.PassiveResourceRegenPerSec` | per-class (Reaver `0` hit-driven; Hunter `3` passive Focus regen; Cipher / Speaker `0` placeholders) | `Classes/WalkerClassDefinition.cs` |
-| `GameScreen.LootDropChance` | `0.08f` (per enemy kill) | `UI/GameScreen.cs` |
+| `GameLoopController.LootDropChance` | `0.08f` (per enemy kill — shared by GameScreen + sim TickRunner) | `Core/GameLoopController.cs` |
+| `LootDropper.EquipmentShare` / `MagicWeaponShare` | `0.15f` / `0.25f` (of drops, fraction that's a weapon; of weapons, fraction that's IronBlade vs RustyKnife) | `Items/LootDropper.cs` |
+| `RustyKnife.WeaponDamageBonus` / `IronBlade.WeaponDamageBonus` / `Wolfbreaker.WeaponDamageBonus` | `+3` / `+6` / `+12` (Normal / Magic / Legendary tier progression) | `Items/RustyKnife.cs` etc. |
 | `Potions.HealthPotionHealAmount` | `40` HP | `Items/Potions.cs` |
 | `Potions.ResourcePotionRestoreAmount` | `30` resource | same |
 | `Potions.DrinkCooldownSec` | `0.5f` (per-potion-type spam gate) | same |
@@ -171,6 +173,20 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Equipment system v0 — weapon damage flows from drops to auto-attack
+- **First real loot loop**. Enemies occasionally drop weapons (RustyKnife / IronBlade) on kill alongside potions; bosses deterministically drop their signature legendary (Wolfbreaker). Weapons auto-equip if the slot is empty OR the new piece's `WeaponDamageBonus` exceeds the current weapon's. Equipped weapon's bonus is added on top of the unarmed baseline (`CombatController.BaseDamage = 10`) inside `Player.WeaponDamage`, which `CombatController.TryAttack` now reads instead of the flat const.
+- **`Items/ItemDefinition.cs`** — new `WeaponDamageBonus` field (default 0). Future skill-damage scaling will read the same field; for v0 only auto-attack benefits.
+- **`Entities/Player.cs`** — new `EquippedWeapon: ItemDefinition?` field, `WeaponDamage` derived getter, and a `PickUp(ItemDefinition)` router that dispatches consumables to `Inventory.Add` and weapons to `TryEquipWeapon`. Auto-equip rule is "strictly higher bonus wins" — ties keep the current weapon (defensive: the player would manually swap in a UI). Replaced weapons are silently discarded today (no bag yet).
+- **`Combat/CombatController.cs`** — `TryAttack` now reads `attacker is Player p ? p.WeaponDamage : BaseDamage`. Non-player attackers (none today) fall back to the unarmed baseline so the system stays generic for when enemies grow weapons of their own.
+- **`Items/RustyKnife.cs` (new)** — Normal-tier starter weapon (+3 dmg). **`Items/IronBlade.cs` (new)** — Magic-tier mid-floor weapon (+6). **`Items/Wolfbreaker.cs`** — Legendary bumped to +12 (∼2× IronBlade so the first-boss reward feels meaningful).
+- **`Items/LootDropper.cs`** — drop pool now splits between consumables (85%) and equipment (15%); equipment further splits 75% RustyKnife / 25% IronBlade. With `LootDropChance = 0.08`, that's ∼1 weapon per 80 kills — meaningful upgrade events without flooding the floor with junk weapons.
+- **`Core/GameLoopController.cs`** — `LootDropChance` constant promoted from GameScreen so sim shares the same drop rate. Pickup routes through `_player.PickUp(item)` instead of `_player.Inventory.Add(item)` so equipment doesn't get swallowed by the consumable gate.
+- **`Sim/TickRunner.cs`** — wired the loot-drop pipeline (mirrors GameScreen's `OnEntityDied` branch: boss → deterministic Wolfbreaker drop, regular enemy → `LootDropper.RollDrop`). Sim's pilot now picks up weapons it walks over and the auto-equip + WeaponDamage flow runs end-to-end. Effect is muted because each Run is one floor (no cross-floor weapon carry-over) but it's the same code path as live play, so live numbers reflect the system honestly.
+- **`UI/GameScreen.cs`** — top status bar gets a `[WeaponName +N]` segment when a weapon is equipped, between the zone label and the combat target. Bare-handed players see nothing there — clean fallback at the start of a run.
+- **What's deferred** (logged in Open Questions): full bag inventory + drag-to-equip UI; skill damage scaling with weapon (Cleave / HeavyStrike / etc. stay flat for now); other equipment slots (Armor / Ring / Amulet); on-hit triggers and the Wolfbreaker bleed effect; weapon variety beyond the three examples. The data model and pickup pipeline are in place — adding more is per-file additions, no plumbing changes.
+- **Tests** — `Items/EquipmentTests.cs` covers PickUp routing (consumable → Inventory; weapon → equip), auto-equip-when-bare, upgrade-on-better, no-downgrade, WeaponDamage = base + bonus, and end-to-end TryAttack-with-weapon-deals-boosted-damage.
+- **Sim shape**: equipment-aware sim (run10) shows F5 Reaver clear bumped 17→18/25 and average DmgDealt up ~1% per floor; muted because each Run is single-floor without cross-floor weapon carry-over. Live play (which descends through floors with the weapon equipped) sees a much larger compounding effect.
 
 ### Wolf-Mother boss arena on F5
 - **First real boss encounter** lands as a content addition. F5 (the v0 entry in `BspGenerator.BossFloors`) generates a `BossAnchor` tile at the farthest room instead of the usual `Threshold`; Wolf-Mother spawns there at floor load; descent unlocks (`BossAnchor` → `Threshold`) only when she dies. Defeating her drops Wolfbreaker as a `FloorItem` on the death tile.
@@ -529,8 +545,8 @@ When you `run`, you get:
 
 ### Mid-term — skills and loot
 - [ ] **All four classes' starter skills** (~10 per class = ~40 skills) — wire into right-click skill slot for v0.
-- [ ] **Loot drop on enemy kill**: dropped items render as glyphs on tile, walk over to pick up.
-- [ ] **Inventory UI**: 32-slot bag + 8 equipment slots, drag to equip, right-click to use consumable.
+- [x] ~~**Loot drop on enemy kill**: dropped items render as glyphs on tile, walk over to pick up.~~ — v0 shipped (potions + weapons drop; auto-equip-if-better; HUD shows weapon name).
+- [ ] **Inventory UI**: 32-slot bag + 8 equipment slots, drag to equip, right-click to use consumable. **Status**: Player.EquippedWeapon + auto-equip-if-better in place; bag list + manual swap UI still to land.
 - [ ] **Item tier system end-to-end**: drop with rarity color, unidentified Rare+ shroud, Reading Stone in town for ID.
 - [x] ~~**Wolf-Mother boss**: first iconic encounter, signature mechanic (pack summon? leap?), Wolfbreaker drop.~~ — v0 shipped (140 HP / 10 dmg / 1.4s cd melee_charger on F5 only). **Still open**: pup-summon signature mechanic (deferred until `IEnemyAi` gains spawn capability); F10 boss; equipment-side effect of Wolfbreaker pickup (waits on equipment system).
 
@@ -588,7 +604,10 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **`RenderSettings.StartingClassId` is now only the menu's *default highlight*** — actual class is chosen at runtime via `ClassSelectScreen`. The constant only matters when the playable-class list collapses to ≤1 entry (menu skipped). Cipher / Speaker remain filtered out of the menu until their kits ship.
 - **Whirlwind is undertuned at depth** — 15 dmg per enemy in a 5×5 area for 30 Rage / 6s cd. At F10 enemies have ~32 HP, so Whirlwind doesn't even half-kill a wolf — the 30-Rage spend (60% of a full bar) doesn't feel like a payoff. Round-1 balance pass focused on Reaver sustain (where deaths actually were); Whirlwind buff is a candidate for round 2 if the kit still feels offense-light in live play.
 - **Wolf-Mother is melee_charger only (no signature mechanic yet)** — the GDD calls out pack-summon as her identity beat, but `IEnemyAi.Tick` today owns one actor and has no path to inject new enemies into the world. Adding the summon needs either a "spawn request" return value on the AI tick or an event the orchestrator subscribes to. Tracked for round 2 of boss work; v0 ships her as a high-HP charger so the boss-arena loop is testable.
-- **Wolfbreaker pickup is visual-only** — the FloorItem renders + can be walked over, but `Inventory.Add` silently no-ops on equipment items today (only HP / Resource potions are wired). The legendary effect lands when the equipment system does (32-slot bag + equip slots + on-hit hooks per GDD §6).
+- **Skill damage stays flat — only auto-attack benefits from weapons** — Cleave / HeavyStrike / Whirlwind etc. have hard-coded per-skill damage constants. Future refactor: route skill damage through Player.WeaponDamage so the Reaver Q-W-E-R kit scales with the equipped weapon. Not done in v0 because skills also have AOE / radius / cooldown identity that doesn't trivially scale linearly with weapon damage — needs a per-skill scaling factor.
+- **Replaced weapons are silently discarded** — auto-equip-if-better drops the previous weapon when upgrading. No bag yet, so there's no place to put the old one. Loss is imperceptible today (drops are rare and downgrades stay equipped) but will need addressing when the inventory UI lands so players can choose what to keep.
+- **Equipment slots beyond Weapon are stubbed** — ItemSlot enum has Helm / Chest / Boots / Ring / Amulet / Artifact / Charm but `Player.PickUp` silently discards them. They'll wire up in parallel as their gameplay effects (armor reduces damage, ring grants resource regen, etc.) get designed.
+- **Wolfbreaker's legendary effect doesn't fire yet** — `WolfbreakerEffect.Description` says "your basic attacks against bleeding enemies deal +50% damage and refund Rage" but there's no bleed system, no on-hit trigger pipeline. For v0 Wolfbreaker contributes via its WeaponDamageBonus (+12) only. The bleed + refund mechanic lands when the on-hit trigger system does.
 - **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
 - **Cellular automata pass for forest feel deferred** — listed under Polish / juice. Needs flood-fill connectivity repair before BSP+CA is safe.
 - **Doors at room↔corridor junctions deferred** — placed deliberately later (boss-arena gates, town buildings). Wolfwood gets none.
@@ -659,7 +678,7 @@ src/Tarpg/
     Corpse.cs                         Entity subclass for the player's death drop (zIndex 25)
   Inventory/
     Inventory.cs                      first-cut consumables-only — HP / Resource potion counts
-  Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker, Potions, LootDropper
+  Items/                              Definition, Tier, Slot, Affix, ILegendaryEffect, Wolfbreaker, RustyKnife, IronBlade, Potions, LootDropper
   Skills/                             Definition, ISkillBehavior, ISkillVfx
                                       Reaver:  Cleave, HeavyStrike, Charge, WarCry, Whirlwind
                                       Hunter:  QuickShot, Volley, Roll, Bandage, RainOfArrows

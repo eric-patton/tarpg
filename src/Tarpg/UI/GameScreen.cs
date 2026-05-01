@@ -140,9 +140,9 @@ public sealed class GameScreen : SadConsole.Console
     private readonly List<Corpse> _corpses = new();
     private readonly Dictionary<Corpse, SadEntity> _corpseVisuals = new();
 
-    // Chance per enemy kill that something drops. 0.08 = roughly one drop
-    // every 12 kills; tunable from sim runs once equipment loot lands too.
-    private const float LootDropChance = 0.08f;
+    // Chance per enemy kill that something drops. Lives on the loop so
+    // sim TickRunner reads the same value when mirroring loot rolls.
+    private const float LootDropChance = GameLoopController.LootDropChance;
 
     // Drink cooldowns now live on GameLoopController so the sim pilots
     // hit the same gate as live play. GameScreen just dispatches input
@@ -1012,6 +1012,15 @@ public sealed class GameScreen : SadConsole.Console
 
         var leftText = $" {_zone.Name} F{_currentFloor}";
         surface.Print(0, 0, leftText, Color.White, Color.Black);
+
+        // Equipped weapon display sits to the right of the zone label
+        // when a weapon is equipped — bare-handed players see nothing
+        // here so the bar reads cleanly at the bottom of the kit curve.
+        if (_player.EquippedWeapon is { } weapon)
+        {
+            var weaponText = $"  [{weapon.Name} +{weapon.WeaponDamageBonus}]";
+            surface.Print(leftText.Length, 0, weaponText, Color.LightGray, Color.Black);
+        }
 
         if (_combat.Target is not null)
         {
