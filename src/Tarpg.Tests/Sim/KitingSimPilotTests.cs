@@ -205,6 +205,18 @@ public class KitingSimPilotTests
         Assert.True(movement.HasGoal);
     }
 
+    // Helper: simulate the wall-slide oscillation pattern that drove the
+    // 1018-F2 pin in the real run — player tile alternates by 1 between
+    // (a, b) and (a, b+1) every tick, mimicking the corridor pacing. Both
+    // positions stay close enough to the threat (cheby ≤ 3) and both still
+    // have LOS blocked by the wall, so the commit-fight counter accumulates
+    // while the stuck-bail counter resets on each tile change. Without this
+    // movement, the 60-tick stuck-bail fires at tick 60 — well before the
+    // 180-tick commit-fight threshold — and clears combat before commit
+    // engages.
+    private static void OscillatePlayer(Player player, int tick, Position a, Position b)
+        => player.SetTile(tick % 2 == 0 ? a : b);
+
     [Fact]
     public void Tick_PinnedByWallNoLos_CommitsToFightAfterThreshold()
     {
@@ -213,17 +225,18 @@ public class KitingSimPilotTests
         // and "close in" forever, never firing a shot. After enough ticks
         // (CommitFightThresholdTicks=180, ~3 sim-sec) the pilot must
         // commit to a melee engagement so the run progresses.
-        //
-        // Setup mimics the original geometry: a single wall tile between
-        // the player and a wolfshade-equivalent target, both close enough
-        // that the pin condition holds.
         var map = TestMaps.OpenFloorWithWalls(40, 40, new Position(11, 10));
-        var ctx = NewContext(out var pilot, out _, out var enemies, out var combat, out _, out _,
+        var ctx = NewContext(out var pilot, out var player, out var enemies, out var combat, out _, out _,
             playerStart: new Position(10, 10), threshold: new Position(30, 30), map: map);
-        // Enemy at (12, 10): cheby=2 to player, wall at (11,10) blocks LOS.
+        // Enemy at (12, 10): cheby=2 to player, wall at (11,10) blocks LOS
+        // from both (10,10) and (10,11) — the oscillation tiles.
         enemies.Add(Enemy.Create(Wolf.Definition, new Position(12, 10)));
 
-        for (var i = 0; i < 200; i++) pilot.Tick(ctx);
+        for (var i = 0; i < 200; i++)
+        {
+            pilot.Tick(ctx);
+            OscillatePlayer(player, i, new Position(10, 10), new Position(10, 11));
+        }
 
         // Past the commit-fight threshold: combat target now points at
         // the pinning enemy so the loop's chase + auto-attack path drives
@@ -238,11 +251,15 @@ public class KitingSimPilotTests
         // can kite again — the kiter must drop the combat target to stop
         // the loop's chase behavior and resume normal behavior.
         var map = TestMaps.OpenFloorWithWalls(40, 40, new Position(11, 10));
-        var ctx = NewContext(out var pilot, out _, out var enemies, out var combat, out _, out _,
+        var ctx = NewContext(out var pilot, out var player, out var enemies, out var combat, out _, out _,
             playerStart: new Position(10, 10), threshold: new Position(30, 30), map: map);
         enemies.Add(Enemy.Create(Wolf.Definition, new Position(12, 10)));
 
-        for (var i = 0; i < 200; i++) pilot.Tick(ctx);
+        for (var i = 0; i < 200; i++)
+        {
+            pilot.Tick(ctx);
+            OscillatePlayer(player, i, new Position(10, 10), new Position(10, 11));
+        }
         Assert.NotNull(combat.Target);
 
         // Knock the wall down — LOS now clear from player to enemy.
