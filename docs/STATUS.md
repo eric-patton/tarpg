@@ -1,6 +1,6 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-30 (skill / class balance pass round 1)
+> **Updated**: 2026-04-30 (Wolf-Mother boss arena on F5)
 > **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); two playable classes (Reaver melee + Hunter ranged), each with a full 5-slot kit (M2/Q/W/E/R) wired via `WalkerClassDefinition.StartingSlotSkills`; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite (skills, AIs, BSP, Items, Movement, Combat, slot-wiring) and a `tarpg-sim` CLI that sweeps (floor × seed × class) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
@@ -113,6 +113,8 @@ When you `run`, you get:
 | `BspGenerator.MinSpawnDistanceFromEntry` | `4` (chebyshev, room-center vs entry) | same |
 | `BspGenerator.MaxEnemySlotsBase` / `Cap` | `6` / `12` (slots, not enemies — pack expansion can multiply) | same |
 | `BspGenerator.SplitAspectRatio` | `1.25f` | same |
+| `BspGenerator.BossFloors` | `[5]` (depths that host a boss arena; v0 ships F5 only — F10 added when F5 fight is dialed in) | `World/Generation/BspGenerator.cs` |
+| `WolfMother.BaseHealth` / `BaseDamage` / `AttackCooldown` | `140` HP / `10` dmg / `1.4s` (sim-tuned for ~70% Reaver / ~90% Hunter F5 clear) | `Enemies/WolfMother.cs` |
 | `GameScreen.WorldWidth` / `WorldHeight` | `160` / `60` | `UI/GameScreen.cs` |
 | `Program.ScreenWidth` / `ScreenHeight` | `80` / `30` (viewport, in cells) | `Program.cs` |
 | `MeleeChargerAi.AggroMemorySec` | `3.0f` (chase persists this long after losing FOV) | `Enemies/Ai/MeleeChargerAi.cs` |
@@ -169,6 +171,18 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Wolf-Mother boss arena on F5
+- **First real boss encounter** lands as a content addition. F5 (the v0 entry in `BspGenerator.BossFloors`) generates a `BossAnchor` tile at the farthest room instead of the usual `Threshold`; Wolf-Mother spawns there at floor load; descent unlocks (`BossAnchor` → `Threshold`) only when she dies. Defeating her drops Wolfbreaker as a `FloorItem` on the death tile.
+- **`World/TileTypes.cs`** — new `BossAnchor` tile type (walkable, gold `*` glyph, distinct from purple `>` Threshold). Visually reads as "arena marker" rather than "go down here." Walkable so the player can engage the boss at melee.
+- **`Enemies/EnemyDefinition.cs`** — new `bool IsBoss` flag (default false) consumed by the loop's tile-conversion path. Lets future bosses opt in without touching name-string conditionals.
+- **`World/Generation/BspGenerator.cs`** — new `BossFloors = [5]` constant. `Generate` checks `BossFloors.Contains(floor)` and stamps the right tile at the farthest room. Non-boss floors keep the existing `Threshold`-direct behavior.
+- **`Enemies/WolfMother.cs`** (new) — `EnemyDefinition` for the live combat actor. Tuned to 140 HP / 10 dmg / 1.4s attack cd / 5.5 t/s movement / `melee_charger` AI. `RarityWeight = 0` keeps her out of the random-spawn pool — she only appears via the explicit boss-spawn at the BossAnchor. The signature pup-summon mechanic the GDD calls out is deferred until `IEnemyAi` gains a "spawn into the world" capability.
+- **`Core/GameLoopController.cs`** — when an `IsBoss` enemy in `_enemies` is dead, the loop walks the map once and converts every `BossAnchor` tile to `Threshold`. Single boolean gate (`_bossTilesConverted`, reset in `OnFloorLoaded`) keeps the conversion idempotent — fires on the death tick, no-op forever after. Owning this in the loop (vs. GameScreen) means the sim's TickRunner sees the same descent-unlock without duplicating the logic.
+- **`UI/GameScreen.cs`** — new `SpawnBoss` helper for the deterministic-tile, single-actor spawn (parallel to the random `SpawnPack` flow). `OnEntityDied` branches on `enemy.Definition.IsBoss` — boss death calls `DropBossLoot` (always Wolfbreaker, no roll) instead of the random `LootDropper`. Wolfbreaker spawns as a `FloorItem`; Inventory.Add silently no-ops on equipment today, so the pickup is visible feedback without a stat effect (the actual weapon equip lands when the equipment system does).
+- **`Sim/TickRunner.cs`** — mirrors GameScreen's boss-floor branch so sim measures the same encounter shape as live play. Without this, F5 sweeps would time out (BossAnchor never converts).
+- **F5 sim shape (n=25)**: Reaver/greedy 17/25 cleared (8 deaths, all to the boss), Hunter/kiting 22/25 (3 deaths). Boss is the dominant difficulty spike on the floor — 100% clear F1-F4, 68% / 88% F5, 96%+ F6+ (boss is gone). Honest "first iconic encounter" shape — winnable with care, lethal if you trade hits with her.
+- **Tests** — `World/Generation/BspGeneratorTests.cs` adds non-boss-floor places Threshold + boss-floor places BossAnchor. New `Core/BossDeathTileTests.cs` covers boss-alive-tile-unchanged + boss-dies-tile-becomes-Threshold + non-boss-death-doesn't-trigger.
 
 ### Skill / class balance pass — round 1
 - **First closed-loop tuning iteration** with both classes against the live `tarpg-sim` baseline. Each change was hypothesized → tweaked → resimmed → measured against the prior CSV (no more gut tuning).
@@ -510,7 +524,6 @@ When you `run`, you get:
 ### Soon — next 3–5 sessions
 - [ ] Skill / class balance pass (above)
 - [ ] **Cellular automata roughening for Wolfwood floor edges** + flood-fill connectivity repair.
-- [ ] **Distinct boss-anchor tile**: today the Threshold doubles as boss-spawn marker; once descent meets boss arenas they can't be the same.
 - [ ] **Pack composition rolls**: today every BSP slot rolls a single weighted draw; deep-floor variety would benefit from "mixed packs" (e.g., 2 pups + 1 howler around the same anchor).
 - [ ] **Per-zone weight curves vs flat depth scaling**: spawn weights could shift with depth (e.g., pups dominate F1–F3, dires + howlers ramp F5+). Currently weights are floor-invariant.
 
@@ -519,7 +532,7 @@ When you `run`, you get:
 - [ ] **Loot drop on enemy kill**: dropped items render as glyphs on tile, walk over to pick up.
 - [ ] **Inventory UI**: 32-slot bag + 8 equipment slots, drag to equip, right-click to use consumable.
 - [ ] **Item tier system end-to-end**: drop with rarity color, unidentified Rare+ shroud, Reading Stone in town for ID.
-- [ ] **Wolf-Mother boss**: first iconic encounter, signature mechanic (pack summon? leap?), Wolfbreaker drop.
+- [x] ~~**Wolf-Mother boss**: first iconic encounter, signature mechanic (pack summon? leap?), Wolfbreaker drop.~~ — v0 shipped (140 HP / 10 dmg / 1.4s cd melee_charger on F5 only). **Still open**: pup-summon signature mechanic (deferred until `IEnemyAi` gains spawn capability); F10 boss; equipment-side effect of Wolfbreaker pickup (waits on equipment system).
 
 ### Mid-term — world / town
 - [ ] **Walker's Hold town map**: 8 named NPCs (Eldest, Reader, Steward, Smith, Apothecary, Innkeeper, Marshal, Sigil-Maker) with dialogue stubs.
@@ -574,7 +587,8 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **Sim pilots are pressure-testing, not optimal play** — `GreedySimPilot` melees the nearest enemy and fires AOE on dense clusters; `KitingSimPilot` holds a 3–6 tile kite band, fires QuickShot, retreats from melee, falls back to melee commit-fight when wall geometry pins it. Both undersell the kits (no resource banking, no skip-this-enemy decisions, no LOS-aware sideways repositioning to break sightline) but their CSVs are usable as *relative* comparisons (this kit vs that, F1 vs F8). Use `--pilot greedy` for Reaver, `--pilot kiting` for Hunter; cross-comparing them on the same class measures pilot effects rather than class effects, so don't.
 - **`RenderSettings.StartingClassId` is now only the menu's *default highlight*** — actual class is chosen at runtime via `ClassSelectScreen`. The constant only matters when the playable-class list collapses to ≤1 entry (menu skipped). Cipher / Speaker remain filtered out of the menu until their kits ship.
 - **Whirlwind is undertuned at depth** — 15 dmg per enemy in a 5×5 area for 30 Rage / 6s cd. At F10 enemies have ~32 HP, so Whirlwind doesn't even half-kill a wolf — the 30-Rage spend (60% of a full bar) doesn't feel like a payoff. Round-1 balance pass focused on Reaver sustain (where deaths actually were); Whirlwind buff is a candidate for round 2 if the kit still feels offense-light in live play.
-- **Threshold tile is the descent trigger AND the BSP boss-anchor marker** — these will conflict the moment boss arenas land (you'd descend onto the boss tile instead of fighting). Need a distinct boss-spawn tile (or a sidecar marker layer on Map) before the Wolf-Mother arena.
+- **Wolf-Mother is melee_charger only (no signature mechanic yet)** — the GDD calls out pack-summon as her identity beat, but `IEnemyAi.Tick` today owns one actor and has no path to inject new enemies into the world. Adding the summon needs either a "spawn request" return value on the AI tick or an event the orchestrator subscribes to. Tracked for round 2 of boss work; v0 ships her as a high-HP charger so the boss-arena loop is testable.
+- **Wolfbreaker pickup is visual-only** — the FloorItem renders + can be walked over, but `Inventory.Add` silently no-ops on equipment items today (only HP / Resource potions are wired). The legendary effect lands when the equipment system does (32-slot bag + equip slots + on-hit hooks per GDD §6).
 - **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
 - **Cellular automata pass for forest feel deferred** — listed under Polish / juice. Needs flood-fill connectivity repair before BSP+CA is safe.
 - **Doors at room↔corridor junctions deferred** — placed deliberately later (boss-arena gates, town buildings). Wolfwood gets none.
@@ -631,6 +645,7 @@ src/Tarpg/
   Enemies/
     EnemyDefinition.cs                registry schema — id, name, stats, AiTag, ZoneIds, RarityWeight, MoveSpeed, AttackCooldown, PackSize
     Wolf.cs / WolfPup.cs / DireWolf.cs / Wolfshade.cs / Howler.cs    Wolfwood enemy definitions (5 tiers)
+    WolfMother.cs                     boss enemy spawned at the F5 BossAnchor tile
     Ai/
       IEnemyAi.cs                     strategy interface — Tick(self, player, map, dt, aspect)
       MeleeChargerAi.cs               Wolf / pup / dire wolf brain: FOV-aggro w/ 3s memory, A* chase, melee swing

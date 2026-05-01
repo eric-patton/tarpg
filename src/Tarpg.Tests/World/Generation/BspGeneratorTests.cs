@@ -81,6 +81,28 @@ public class BspGeneratorTests
         Assert.True(f10.EnemySpawnPoints.Count >= f1.EnemySpawnPoints.Count);
     }
 
+    [Fact]
+    public void Generate_NonBossFloor_PlacesThresholdAtAnchor()
+    {
+        var gen = new BspGenerator();
+        var floor = gen.Generate(Width, Height, seed: 42, floor: 1);
+
+        Assert.Equal(TileTypes.Threshold.Id, floor.Map[floor.BossAnchor].Type.Id);
+    }
+
+    [Fact]
+    public void Generate_BossFloor_PlacesBossAnchorAtAnchor()
+    {
+        // F5 is the v0 entry in BspGenerator.BossFloors; the farthest
+        // room should hold a BossAnchor tile (not Threshold) so the
+        // boss-spawn pipeline takes over from the descent pipeline.
+        var gen = new BspGenerator();
+        var floor = gen.Generate(Width, Height, seed: 42, floor: 5);
+
+        Assert.Contains(5, BspGenerator.BossFloors);
+        Assert.Equal(TileTypes.BossAnchor.Id, floor.Map[floor.BossAnchor].Type.Id);
+    }
+
     private static bool[,] ReachableFrom(Map map, Position start)
     {
         var visited = new bool[map.Width, map.Height];

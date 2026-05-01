@@ -46,4 +46,19 @@ public static class TileTypes
         IsWalkable = true,
         IsTransparent = true,
     };
+
+    // Boss arena marker. Walkable so the player can approach the boss
+    // and engage; visually distinct (warm gold) so it doesn't read as
+    // descent. Converted to Threshold by GameLoopController when the
+    // floor's boss enemy dies, exposing the descent path as the reward
+    // for clearing the arena.
+    public static readonly TileTypeDefinition BossAnchor = new()
+    {
+        Id = "boss_anchor",
+        Name = "boss arena",
+        Glyph = '*',
+        Foreground = new Color(220, 180, 110),
+        IsWalkable = true,
+        IsTransparent = true,
+    };
 }

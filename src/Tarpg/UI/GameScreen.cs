@@ -429,7 +429,30 @@ public sealed class GameScreen : SadConsole.Console
         // since the floor swaps before the spray would render.
         if (entity is not Enemy enemy) return;
         _hitFeedback.OnDied(enemy);
-        TryDropLoot(enemy);
+        if (enemy.Definition.IsBoss)
+            DropBossLoot(enemy);
+        else
+            TryDropLoot(enemy);
+    }
+
+    // Boss drops are deterministic (always the SignatureLootId) instead
+    // of rolling against LootDropChance — defeating the Wolf-Mother
+    // should always yield Wolfbreaker. v0 spawns the legendary as a
+    // FloorItem the player walks over; Inventory.Add silently ignores
+    // non-consumable items today, so the pickup is visible feedback
+    // but doesn't yet equip the weapon. The actual stat effect lands
+    // when the equipment system does.
+    private void DropBossLoot(Enemy boss)
+    {
+        if (!Registries.Items.TryGet("wolfbreaker", out var loot)) return;
+        var dropped = FloorItem.Create(loot, boss.Position, new Color(220, 180, 110));
+        var visual = new SadEntity(dropped.Color, Color.Black, dropped.Glyph, zIndex: dropped.RenderLayer)
+        {
+            UsePixelPositioning = true,
+        };
+        _entityManager.Add(visual);
+        _floorItems.Add(dropped);
+        _floorItemVisuals[dropped] = visual;
     }
 
     private void TryDropLoot(Enemy enemy)
@@ -554,7 +577,34 @@ public sealed class GameScreen : SadConsole.Console
         foreach (var spawn in floor.EnemySpawnPoints)
             SpawnPack(PickEnemyForZone(), spawn);
 
+        // Boss spawn — Wolf-Mother on the boss-anchor tile when this
+        // floor is in the BossFloors schedule. The BSP already stamped
+        // the right tile type at floor.BossAnchor, so we just need the
+        // enemy. Other regular spawns happen above; the boss is a
+        // singleton specifically placed at the arena.
+        if (Tarpg.World.Generation.BspGenerator.BossFloors.Contains(_currentFloor))
+            SpawnBoss(Tarpg.Enemies.WolfMother.Definition, floor.BossAnchor);
+
         UpdateCamera();
+    }
+
+    // Boss spawn dodges the SpawnPack flow because bosses are single
+    // actors at a deterministic tile, not pack-expanded random rolls.
+    // ApplyFloorScaling still fires so deep-floor boss encounters hit
+    // harder per the same curve as regular enemies.
+    private void SpawnBoss(EnemyDefinition def, Position tile)
+    {
+        var enemy = Enemy.Create(def, tile);
+        ApplyFloorScaling(enemy);
+        _enemies.Add(enemy);
+        enemy.Damaged += OnEntityDamaged;
+        enemy.Died += OnEntityDied;
+        var visual = new SadEntity(enemy.Color, Color.Black, enemy.Glyph, zIndex: enemy.RenderLayer)
+        {
+            UsePixelPositioning = true,
+        };
+        _entityManager.Add(visual);
+        _enemyVisuals[enemy] = visual;
     }
 
     // Standard weighted-pick over the zone-eligible subset of the enemy

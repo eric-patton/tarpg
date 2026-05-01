@@ -39,5 +39,10 @@ public sealed class EnemyDefinition : IRegistryEntry
     // in the same zone. 0 disables spawn rolls (e.g., quest- or boss-only).
     public int RarityWeight { get; init; } = 1;
 
+    // Boss flag. Used by the loop's boss-death handler to convert the
+    // floor's BossAnchor tile to Threshold (= unlock descent) when this
+    // enemy dies. Regular enemies have no such effect on terrain.
+    public bool IsBoss { get; init; } = false;
+
     public string? FlavorText { get; init; }
 }

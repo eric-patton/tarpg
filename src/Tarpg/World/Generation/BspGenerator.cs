@@ -37,6 +37,15 @@ public sealed class BspGenerator : IZoneGenerator
     // vice versa). Below the threshold, the split direction is random.
     private const float SplitAspectRatio = 1.25f;
 
+    // Floor depths that host a boss arena. On these floors the
+    // farthest-room anchor is marked as BossAnchor instead of Threshold —
+    // GameScreen spawns the zone's boss enemy at that tile, and
+    // GameLoopController converts it to Threshold once the boss dies.
+    // Per the GDD, Wolfwood has bosses at F5 (mid-zone) and F10
+    // (zone-end); v0 ships F5 only so the loop can be validated before
+    // we tune the second encounter.
+    public static readonly IReadOnlyList<int> BossFloors = new[] { 5 };
+
     public GeneratedFloor Generate(int width, int height, int seed, int floor)
     {
         var rng = new Random(seed);
@@ -84,12 +93,15 @@ public sealed class BspGenerator : IZoneGenerator
         VerifyAllRoomsReachable(map, entry, rooms, seed);
 
         // Boss anchor = a random walkable cell in the room farthest (by
-        // chebyshev distance of room centers) from the entry room. Marked
-        // with a Threshold tile so the player can see "this is where the
-        // next thing happens" until the real boss spawn lands.
+        // chebyshev distance of room centers) from the entry room. The
+        // tile type depends on whether this is a boss floor: BossAnchor
+        // hosts the boss enemy until killed (then converted to Threshold);
+        // non-boss floors just place the Threshold directly so descent
+        // works without requiring an arena fight.
         var bossRoom = FarthestRoom(rooms, entryRoom);
         var bossAnchor = RandomWalkableInRect(map, bossRoom, rng);
-        map.SetTile(bossAnchor, TileTypes.Threshold);
+        var anchorTile = BossFloors.Contains(floor) ? TileTypes.BossAnchor : TileTypes.Threshold;
+        map.SetTile(bossAnchor, anchorTile);
 
         var spawns = ChooseEnemySpawns(
             map, rooms, entryRoom, bossRoom, entry, bossAnchor, maxEnemySlots, rng);

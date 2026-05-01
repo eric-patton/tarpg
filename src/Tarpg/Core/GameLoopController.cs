@@ -65,6 +65,7 @@ public sealed class GameLoopController
     private float _resourceRegenAccumulator;
     private float _hpPotionCooldown;
     private float _resourcePotionCooldown;
+    private bool _bossTilesConverted;
 
     private readonly SkillDefinition?[] _slotSkills = new SkillDefinition?[SlotCount];
     private readonly float[] _slotCooldowns = new float[SlotCount];
@@ -101,6 +102,7 @@ public sealed class GameLoopController
         _hpPotionCooldown = 0f;
         _resourcePotionCooldown = 0f;
         _timeSinceLastDamage = OutOfCombatRegenDelaySec;
+        _bossTilesConverted = false;
         _combat.Clear();
         _movement.Stop();
         if (resetResource) _player.Resource = 0;
@@ -261,6 +263,24 @@ public sealed class GameLoopController
             }
         }
 
+        // Boss-death tile reveal: convert any BossAnchor tiles on the
+        // map to Threshold once a flagged-IsBoss enemy in the live list
+        // has died. Fires once per floor (the bool gate prevents the
+        // map scan on every subsequent tick once the conversion has
+        // happened). Caller's reaping pass may remove the dead boss
+        // from _enemies BEFORE we see it next tick — that's fine, we
+        // already converted on the death tick.
+        if (!_bossTilesConverted)
+        {
+            foreach (var enemy in _enemies)
+            {
+                if (!enemy.IsDead || !enemy.Definition.IsBoss) continue;
+                ConvertBossAnchorTilesToThresholds();
+                _bossTilesConverted = true;
+                break;
+            }
+        }
+
         if (_player.IsDead)
             PlayerDied = true;
 
@@ -302,6 +322,22 @@ public sealed class GameLoopController
             if (corpse.Position != playerTile) continue;
             _player.Inventory.Restore(corpse.HpPotionCount, corpse.ResourcePotionCount);
             _corpses.RemoveAt(i);
+        }
+    }
+
+    private void ConvertBossAnchorTilesToThresholds()
+    {
+        // Boss arenas always have a single BossAnchor tile per floor in
+        // v0, but we walk the whole map defensively in case a future
+        // generator places multiple anchors (multi-stage boss, mini-boss
+        // sub-rooms). Walking 160×60 = 9600 cells once per floor is
+        // negligible vs the per-tick AI / pathfinding budget.
+        for (var y = 0; y < _map.Height; y++)
+        for (var x = 0; x < _map.Width; x++)
+        {
+            var p = new Position(x, y);
+            if (_map[p].Type == TileTypes.BossAnchor)
+                _map.SetTile(p, TileTypes.Threshold);
         }
     }
 

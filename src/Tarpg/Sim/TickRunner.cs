@@ -48,6 +48,17 @@ public static class TickRunner
             SpawnPack(def, spawn, enemies, generated.Map, player.Position, cfg.Floor);
         }
 
+        // Boss spawn — mirrors GameScreen.LoadFloor's boss-floor branch
+        // so sim measures the same encounter shape as live play. Without
+        // this the BossAnchor tile placed by BSP would never convert to
+        // Threshold and the floor would time out for both pilots.
+        if (Tarpg.World.Generation.BspGenerator.BossFloors.Contains(cfg.Floor))
+        {
+            var boss = Enemy.Create(Tarpg.Enemies.WolfMother.Definition, generated.BossAnchor);
+            ApplyFloorScaling(boss, cfg.Floor);
+            enemies.Add(boss);
+        }
+
         generated.Map.ComputeFovFor(player.Position, GameLoopController.FovRadius);
 
         // Metrics accumulate via Damaged / Died subscriptions on every entity
