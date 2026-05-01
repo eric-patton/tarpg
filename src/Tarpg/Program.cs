@@ -36,6 +36,31 @@ return;
 static void OnGameStart(object? sender, GameHost host)
 {
     ContentInitializer.Initialize();
-    Game.Instance.Screen = new GameScreen(ScreenWidth, ScreenHeight);
+
+    // Playable = a class with at least one wired skill slot. Cipher /
+    // Speaker stubs have all-null kits, so they're skipped. With only one
+    // playable class we'd present a one-option menu — silly — so jump
+    // straight to the game in that case.
+    var playable = Tarpg.Core.Registries.Classes.All
+        .Where(c => c.StartingSlotSkills.Any(s => s != null))
+        .OrderBy(c => c.Id, StringComparer.Ordinal)
+        .ToList();
+
     Game.Instance.DestroyDefaultStartingConsole();
+
+    if (playable.Count <= 1)
+    {
+        var only = playable.Count == 1 ? playable[0].Id : Tarpg.Core.RenderSettings.StartingClassId;
+        Game.Instance.Screen = new GameScreen(ScreenWidth, ScreenHeight, classId: only);
+        return;
+    }
+
+    Game.Instance.Screen = new ClassSelectScreen(
+        ScreenWidth, ScreenHeight,
+        playable,
+        onConfirm: chosenId =>
+        {
+            Game.Instance.Screen = new GameScreen(ScreenWidth, ScreenHeight, classId: chosenId);
+        },
+        initialClassId: Tarpg.Core.RenderSettings.StartingClassId);
 }

@@ -171,7 +171,12 @@ public sealed class GameScreen : SadConsole.Console
     // tests / sim runners can pass an explicit seed for reproducibility.
     private readonly Random _rng;
 
-    public GameScreen(int viewportWidth, int viewportHeight, Random? rng = null) : base(viewportWidth, viewportHeight)
+    public GameScreen(
+        int viewportWidth,
+        int viewportHeight,
+        Random? rng = null,
+        string? classId = null)
+        : base(viewportWidth, viewportHeight)
     {
         _rng = rng ?? new Random(Environment.TickCount);
 
@@ -234,7 +239,10 @@ public sealed class GameScreen : SadConsole.Console
         var floor = _zone.Generator.Generate(WorldWidth, WorldHeight, seed, _currentFloor);
 
         _map = floor.Map;
-        var classDef = Registries.Classes.Get(RenderSettings.StartingClassId);
+        // classId comes from ClassSelectScreen in the normal launch flow;
+        // RenderSettings.StartingClassId is the fallback for callers (sim,
+        // tests) that don't go through the menu.
+        var classDef = Registries.Classes.Get(classId ?? RenderSettings.StartingClassId);
         _player = Player.Create(classDef, floor.Entry);
 
         _loop = new GameLoopController(_player, _enemies, _map, _movement, _combat, _floorItems);

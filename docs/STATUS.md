@@ -1,6 +1,6 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-30 (tarpg-sim --dump-floor diagnostic; seed 1023 investigation)
+> **Updated**: 2026-04-30 (class-select screen + PowerShell game-automation harness)
 > **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); two playable classes (Reaver melee + Hunter ranged), each with a full 5-slot kit (M2/Q/W/E/R) wired via `WalkerClassDefinition.StartingSlotSkills`; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite (skills, AIs, BSP, Items, Movement, Combat, slot-wiring) and a `tarpg-sim` CLI that sweeps (floor × seed × class) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
@@ -169,6 +169,22 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### PowerShell game-automation harness — screenshot + input from outside the game
+- **`scripts/launch-debug.ps1`** — builds, starts the game exe with the project's working dir, polls until the `TARPG` window appears, prints the PID. Refuses to launch when a TARPG window is already running so debug iteration doesn't pile up zombie windows.
+- **`scripts/screenshot.ps1`** — captures the game's client area to a PNG (default `debug/screenshot.png`) using `PrintWindow` with `PW_RENDERFULLCONTENT` instead of `CopyFromScreen`. Critical: `CopyFromScreen` returns whatever pixels are at the window's reported screen position, which is *whatever's in front of the game* if it's not foreground (first try captured a board game window the user happened to have open). `PrintWindow` asks the window itself to render into a bitmap regardless of z-order, then we crop to the client rect via `GetClientRect` + `ClientToScreen`.
+- **`scripts/sendkeys.ps1`** — sends keystrokes via `keybd_event`. **Discovered during debugging**: passing scan code 0 (the typical "let Windows derive it" shortcut) works for arrow keys but silently fails for letters / Enter / Space / number keys against MonoGame's input pipeline. Fix: resolve the proper scan code via `MapVirtualKey(MAPVK_VK_TO_VSC)` and pass it explicitly. Also flag the extended-key set (arrows, ins/del, home/end, pgup/pgdn) with `KEYEVENTF_EXTENDEDKEY`. Friendly-name map covers up/down/left/right, enter, esc, space, tab, q/w/e/r, 1-9, F1-F4 — extend the map for new keys.
+- **`scripts/click.ps1`** — sends a left or right mouse click at either viewport-cell coords (default 12×12 cells matching the bundled square font at 1.0× zoom) or pixel coords. Uses `SetCursorPos` + `mouse_event` so the click looks native to the game, just like a user-driven click. Default click sequence: raise window → move cursor → down event → 30ms hold → up event.
+- **`scripts/kill-debug.ps1`** — finds every `TARPG`-titled process and kills them. Safe no-op when nothing is running.
+- **`.gitignore`** — `/debug/` excluded so screenshots / log files stay local.
+- **What this unlocks**: any UI change can now be self-verified — launch, screenshot, look at the PNG via the multimodal Read tool, send input, screenshot again, iterate. No "can't test the UI from here, please run it" hand-offs for UI-flavored work. Verified end-to-end on the new ClassSelectScreen (title appears → arrow keys switch highlight → Enter starts the game with the chosen class → in-game mouse click moves the player).
+
+### Live class-select screen at game start
+- **`UI/ClassSelectScreen.cs`** (new) — title screen rendered before `GameScreen`. Lists every *playable* class (one with a non-empty `StartingSlotSkills` kit), highlights one row at a time, shows the selected class's name / tagline / description / HP / resource / kit (per-slot glyph + cost + cooldown). Up / Down (or W / S) navigate, Enter / Space confirm, Esc quits. Initial highlight defaults to `RenderSettings.StartingClassId` so the previous "flip the constant" workflow still chooses what gets pre-selected.
+- **`UI/GameScreen.cs`** — constructor takes a new optional `string? classId = null` parameter; falls back to `RenderSettings.StartingClassId` when null so sim / test callers (which don't go through the menu) keep working unchanged. Internally `Registries.Classes.Get(classId ?? RenderSettings.StartingClassId)` resolves to the chosen `WalkerClassDefinition`.
+- **`Program.cs`** — `OnGameStart` now filters the class registry to playable kits, sorts deterministically, and shows `ClassSelectScreen` when there's >1 option. With ≤1 option (e.g. mid-development with Cipher / Speaker still empty) the menu is skipped — the game launches straight into `GameScreen` so the player isn't shown a one-option selector.
+- **Cipher / Speaker stay filtered out** of the menu because their `StartingSlotSkills` arrays are still all-null (no kit wired). They naturally re-enter the menu the moment their skills land — no menu code changes needed.
+- **UI testing note**: ClassSelectScreen is SadConsole-coupled and not covered by unit tests. The render path is purely a function of `_selectedIndex` + the class data, so eyeball-verification on `run` is the contract: title appears, Up / Down switches highlight, Enter starts the game with the chosen class, Esc quits.
 
 ### tarpg-sim `--dump-floor` diagnostic
 - **`Tarpg.Sim/Program.cs`** — new `--dump-floor` flag builds a single floor (using `--seed-base` and the first `--floors` value) and prints: header with entry / threshold positions, a per-spawn reachability check (calls `Map.FindPath(entry, spawn)` and reports step count or `UNREACHABLE`), then a full ASCII map view with `E` (entry), `>` (threshold), digit/letter for each spawn index, `.` for floor, `#` for wall.
@@ -464,16 +480,7 @@ When you `run`, you get:
 
 **Estimated effort**: 1 focused tuning session per class plus the weapon / level scaling abstraction (~half a session) if we go that route.
 
-### 2. Live class-select UI
-**Goal**: today, switching classes requires editing `RenderSettings.StartingClassId` and recompiling. Add a class-select screen at game start (or a debug F1/F2/F3/F4 cycle) so balance-tuning playthroughs aren't gated on a build-edit-relaunch loop. Cipher and Speaker stubs are still empty kits — class-select also surfaces "you can't pick these yet" naturally.
-
-**Approach**: simple SadConsole screen rendered before the GameScreen; arrow-keys to highlight, enter to confirm. Skip when only one class has a non-empty `StartingSlotSkills` (single-option = no menu).
-
-**Files to touch**: new `UI/ClassSelectScreen.cs`, `Program.cs` to chain screens, `RenderSettings.StartingClassId` becomes a default-only constant.
-
-**Estimated effort**: 1 session.
-
-### 3. Real corpse-run death
+### 2. Real corpse-run death
 **Goal**: replace "regen on death, same floor, full HP" with corpse drop + XP loss + return-to-town. Town doesn't exist yet so this couples to the town milestone — but the death loop itself can land first as "die → reset to F1 with carried inventory minus a dropped item."
 
 **Approach**: on death, spawn a corpse FloorItem at the death tile carrying the player's potions + (later) a dropped equipment item. Reset to F1 with full HP + empty inventory. Walking onto the corpse retrieves the items.
@@ -488,7 +495,6 @@ When you `run`, you get:
 
 ### Soon — next 3–5 sessions
 - [ ] Skill / class balance pass (above)
-- [ ] Live class-select UI (above)
 - [ ] Real corpse-run death (above)
 - [ ] **Cellular automata roughening for Wolfwood floor edges** + flood-fill connectivity repair.
 - [ ] **Distinct boss-anchor tile**: today the Threshold doubles as boss-spawn marker; once descent meets boss arenas they can't be the same.
@@ -553,7 +559,7 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **Pack spawn doesn't preserve formation across regen** — a pup pack that was a tight 3-cluster at spawn time can scatter as the AIs chase the player. Future "alpha + pack" mechanics may want the pack to stick together.
 - **Seed 1023 F6+ exposes pilot navigation limits, not a BSP bug** — both `Reaver/greedy` and `Hunter/kiting` time out on this seed at floors 6-10 with ~7-8 of 18 enemies killed and `kills_wolfshade=0` across all timeout rows. Investigated via `tarpg-sim --dump-floor`: BSP connectivity is fine, every spawn is A*-reachable from entry (the wolfshade in question is 141 steps away), and the map is well-formed. Three pilot-side compounding factors — (a) `SkirmisherAi` only aggros when its tile is inside player FOV (radius 10), so wolfshades tucked into alcoves stay dormant unless the player walks past the entrance; (b) both pilots use Euclidean-nearest with sticky hysteresis, so they lock onto a wolfshade that's 20 tiles away "as the crow flies" while the actual corridor path is 100+ tiles and doesn't lead through the alcove entrance; (c) 5-min timeout is just barely insufficient when navigation overhead piles up on a 160×60 map with scattered enemies. Real fixes (A*-distance nearest; drop sticky after no-HP-progress; bail-to-threshold time budget) are deferred to the broader balance pass — accept the 1-in-25 outlier as known pilot limitation, not a generation bug.
 - **Sim pilots are pressure-testing, not optimal play** — `GreedySimPilot` melees the nearest enemy and fires AOE on dense clusters; `KitingSimPilot` holds a 3–6 tile kite band, fires QuickShot, retreats from melee, falls back to melee commit-fight when wall geometry pins it. Both undersell the kits (no resource banking, no skip-this-enemy decisions, no LOS-aware sideways repositioning to break sightline) but their CSVs are usable as *relative* comparisons (this kit vs that, F1 vs F8). Use `--pilot greedy` for Reaver, `--pilot kiting` for Hunter; cross-comparing them on the same class measures pilot effects rather than class effects, so don't.
-- **Class can't be switched in-game** — `RenderSettings.StartingClassId` is the only knob; flipping it requires a recompile. The class-select UI is item #2 in Up next.
+- **`RenderSettings.StartingClassId` is now only the menu's *default highlight*** — actual class is chosen at runtime via `ClassSelectScreen`. The constant only matters when the playable-class list collapses to ≤1 entry (menu skipped). Cipher / Speaker remain filtered out of the menu until their kits ship.
 - **Cleave-vs-auto-attack feels off at low enemy counts** — 10 dmg × N adjacent enemies on a 1.0s cooldown for 10 Rage vs the auto-attack's 10 dmg single-target on 0.8s for free. Math wins for Cleave only at 3+ adjacent enemies, and even there it doesn't *feel* like a payoff. Holding for the deferred balance pass — once a second class lands, drive `tarpg-sim` numbers to retune the whole kit holistically.
 - **Threshold tile is the descent trigger AND the BSP boss-anchor marker** — these will conflict the moment boss arenas land (you'd descend onto the boss tile instead of fighting). Need a distinct boss-spawn tile (or a sidecar marker layer on Map) before the Wolf-Mother arena.
 - **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
@@ -603,6 +609,7 @@ src/Tarpg/
     CombatController.cs               auto-attack target + cooldown + ForceStand flag
   UI/
     GameScreen.cs                     orchestrator — input, render, tick (top HUD + bottom panel children)
+    ClassSelectScreen.cs              title screen — pick a walker before the run starts
     Effects/
       HitFeedback.cs                  flash + damage numbers + kill burst + hit-stop
       ClickIndicator.cs               brief "+" pulse on left-button release
