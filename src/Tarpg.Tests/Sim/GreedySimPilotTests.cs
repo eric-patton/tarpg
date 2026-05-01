@@ -161,4 +161,48 @@ public class GreedySimPilotTests
 
         Assert.Same(enemy, combat.Target);
     }
+
+    [Fact]
+    public void Tick_LowHp_FiresWarCryFromSlotE()
+    {
+        // Defensive pilot upgrade: when HP <= 50% and Rage is available,
+        // greedy should cast War Cry (E) to heal. Without this the kit's
+        // proactive heal sat unused at depth, contributing to the F8+
+        // death wave that the balance-pass investigation surfaced.
+        var ctx = NewContext(out var pilot, out var player, out var enemies, out _, out _,
+            playerStart: new Position(10, 10), threshold: new Position(30, 30));
+        // Need an enemy or pilot routes to threshold.
+        enemies.Add(Enemy.Create(Wolf.Definition, new Position(15, 10)));
+        // Wire War Cry into the E slot + give Reaver enough Rage.
+        ctx.Loop.SetSlotSkill(GameLoopController.SlotIndexE, Tarpg.Skills.WarCry.Definition);
+        player.Resource = player.MaxResource;
+        player.Health = (int)(player.MaxHealth * 0.4f); // < 50%
+
+        var hpBefore = player.Health;
+        pilot.Tick(ctx);
+
+        Assert.True(player.Health > hpBefore);
+    }
+
+    [Fact]
+    public void Tick_CriticalHpAndPotionInBag_DrinksPotion()
+    {
+        // Below the panic threshold (30% HP) the pilot should reach for
+        // the HP potion as a last-ditch heal — it's the only non-cooldown
+        // option left after War Cry has been spent.
+        var ctx = NewContext(out var pilot, out var player, out var enemies, out _, out _,
+            playerStart: new Position(10, 10), threshold: new Position(30, 30));
+        enemies.Add(Enemy.Create(Wolf.Definition, new Position(15, 10)));
+        player.Inventory.Add(Tarpg.Items.Potions.HealthPotion);
+        player.Health = (int)(player.MaxHealth * 0.2f); // < 30%
+
+        var hpBefore = player.Health;
+        pilot.Tick(ctx);
+
+        // Potion was consumed AND HP increased. Two assertions because
+        // either alone could be hit by the War Cry path (which we avoid
+        // here by NOT wiring the E slot).
+        Assert.Equal(0, player.Inventory.HealthPotionCount);
+        Assert.True(player.Health > hpBefore);
+    }
 }

@@ -11,7 +11,12 @@ namespace Tarpg.Skills;
 // they were just generating.
 public static class WarCry
 {
-    private const int HealAmount = 25;
+    // Heal amount tuned against deep-floor enemy damage scaling. At F10
+    // a Reaver takes ~165 dmg per fight before dying with a 65 MaxHP pool;
+    // 35 + ~40 (potion) covers the 100-HP shortfall the kit was eating
+    // at the lower 25-HP value. Keeps the 12s cd unchanged so War Cry
+    // remains a "use when you need it" heal, not a passive boost.
+    private const int HealAmount = 35;
 
     public static readonly SkillDefinition Definition = new()
     {

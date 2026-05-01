@@ -49,6 +49,12 @@ public sealed class KitingSimPilot : ISimPilot
     // "use the bandage" trigger.
     private const float BandageHpFraction = 0.5f;
 
+    // Panic potion drink. Bandage at 25 Focus / 12s cd isn't always
+    // available; the potion is the last-ditch heal below this fraction.
+    // Below the Bandage trigger so a healthy panic-drink doesn't waste
+    // a charge on a ~50% HP scratch.
+    private const float PotionPanicHpFraction = 0.3f;
+
     // Sticky-target hysteresis: candidate must be < 75% of current target's
     // distance² to override. Prevents per-tick target swap thrash from
     // tiny player jitter — same reasoning as GreedySimPilot.
@@ -188,10 +194,15 @@ public sealed class KitingSimPilot : ISimPilot
             loop.Combat.Clear();
 
         // Heal early — a successful Bandage doesn't move us, so the rest
-        // of the tick's positional logic still runs after.
+        // of the tick's positional logic still runs after. Panic-drink
+        // the HP potion below an even lower threshold so it stays a
+        // last-ditch option (the kit's regen + Bandage handles the
+        // common case).
         var hpFraction = (float)player.Health / Math.Max(1, player.MaxHealth);
         if (hpFraction <= BandageHpFraction)
             TryCast(ctx, GameLoopController.SlotIndexE, player.Position);
+        if (hpFraction <= PotionPanicHpFraction)
+            ctx.Loop.TryDrinkHealthPotion();
 
         // AOE on dense clusters. Both fire independently (different slots
         // / cooldowns / costs) — the cooldown / resource gates inside

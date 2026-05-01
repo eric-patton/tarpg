@@ -269,6 +269,28 @@ public class KitingSimPilotTests
         Assert.Null(combat.Target);
     }
     [Fact]
+    public void Tick_CriticalHpAndPotionInBag_DrinksPotion()
+    {
+        // Below the panic threshold the kiter falls back to the HP potion
+        // when Bandage isn't viable (cooldown, no Focus). Mirrors the
+        // greedy pilot's panic logic so both kits share the "don't die
+        // with potions in your bag" behavior.
+        var ctx = NewContext(out var pilot, out var player, out var enemies, out _, out _, out var loop,
+            playerStart: new Position(10, 10), threshold: new Position(30, 30));
+        enemies.Add(Enemy.Create(Wolf.Definition, new Position(14, 10)));
+        // Disable Bandage so panic-potion is the only heal path.
+        loop.SetSlotSkill(GameLoopController.SlotIndexE, null);
+        player.Inventory.Add(Tarpg.Items.Potions.HealthPotion);
+        player.Health = (int)(player.MaxHealth * 0.2f); // < 30%
+
+        var hpBefore = player.Health;
+        pilot.Tick(ctx);
+
+        Assert.Equal(0, player.Inventory.HealthPotionCount);
+        Assert.True(player.Health > hpBefore);
+    }
+
+    [Fact]
     public void Tick_Cluster_FiresAoeOnDensestTile()
     {
         // Three enemies clumped at (15,10), (16,10), (15,11) → cluster of 3

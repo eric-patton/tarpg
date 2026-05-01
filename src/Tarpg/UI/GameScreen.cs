@@ -144,10 +144,9 @@ public sealed class GameScreen : SadConsole.Console
     // every 12 kills; tunable from sim runs once equipment loot lands too.
     private const float LootDropChance = 0.08f;
 
-    // Per-potion drink-cooldowns. Indexed by item id; small dictionary
-    // keeps the door open for more consumable types without growing fields.
-    private float _hpPotionCooldown;
-    private float _resourcePotionCooldown;
+    // Drink cooldowns now live on GameLoopController so the sim pilots
+    // hit the same gate as live play. GameScreen just dispatches input
+    // to loop.TryDrinkXPotion() and plays VFX on success.
 
     private bool _shiftHeld;
     private bool _wasLeftButtonDown;
@@ -531,8 +530,7 @@ public sealed class GameScreen : SadConsole.Console
         _corpseVisuals.Clear();
 
         _dashRemainingSec = 0f;
-        _hpPotionCooldown = 0f;
-        _resourcePotionCooldown = 0f;
+        // Potion cooldowns reset inside loop.OnFloorLoaded below.
 
         var seed = _rng.Next();
         System.Console.WriteLine(
@@ -624,12 +622,7 @@ public sealed class GameScreen : SadConsole.Console
         ReapPickedUpItems();
         ReapPickedUpCorpses();
 
-        // Drink-cooldown decay — independent of skill cooldowns, since they
-        // gate consumable spam, not skill resource economy.
-        if (_hpPotionCooldown > 0f)
-            _hpPotionCooldown = MathF.Max(0f, _hpPotionCooldown - deltaSec);
-        if (_resourcePotionCooldown > 0f)
-            _resourcePotionCooldown = MathF.Max(0f, _resourcePotionCooldown - deltaSec);
+        // Potion drink cooldowns now decay inside loop.Tick.
 
         // React to the controller's tile-transition signals. Descent fully
         // reloads the floor (which resets _lastPlayerTile inside LoadFloor).
@@ -696,11 +689,7 @@ public sealed class GameScreen : SadConsole.Console
 
     private void TryDrinkHealthPotion()
     {
-        if (_hpPotionCooldown > 0f) return;
-        if (!_player.Inventory.TryConsume(Potions.HealthPotion)) return;
-        _player.Health = Math.Min(_player.MaxHealth,
-            _player.Health + Potions.HealthPotionHealAmount);
-        _hpPotionCooldown = Potions.DrinkCooldownSec;
+        if (!_loop.TryDrinkHealthPotion()) return;
         // Brief green flash to sell the heal — same color the WarCry skill
         // uses so the "you got better" feedback is unified.
         _skillVfx.PlayScreenFlash(new Color(80, 220, 120), durationSec: 0.25f);
@@ -708,11 +697,7 @@ public sealed class GameScreen : SadConsole.Console
 
     private void TryDrinkResourcePotion()
     {
-        if (_resourcePotionCooldown > 0f) return;
-        if (!_player.Inventory.TryConsume(Potions.ResourcePotion)) return;
-        _player.Resource = Math.Min(_player.MaxResource,
-            _player.Resource + Potions.ResourcePotionRestoreAmount);
-        _resourcePotionCooldown = Potions.DrinkCooldownSec;
+        if (!_loop.TryDrinkResourcePotion()) return;
         _skillVfx.PlayScreenFlash(new Color(220, 140, 40), durationSec: 0.25f);
     }
 

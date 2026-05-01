@@ -8,8 +8,10 @@ namespace Tarpg.Sim;
 // Picks the nearest live enemy, walks into melee range, and lets the
 // loop's auto-attack handle the swing. Fires Q (Cleave) when 2+ enemies
 // are within chebyshev-1 of the player; fires R (Whirlwind) when 3+ are
-// within chebyshev-2. Walks toward the floor's threshold when no enemies
-// remain so the run terminates with PlayerCleared.
+// within chebyshev-2. Fires E (War Cry) when HP drops below WarCryHpFraction
+// to use the kit's only proactive heal. Drinks an HP potion below the
+// PotionPanicHpFraction emergency line. Walks toward the floor's threshold
+// when no enemies remain so the run terminates with PlayerCleared.
 //
 // Stuck detector: A* + wall-slide can leave the pilot's player parked
 // against a corner with combat target still alive but unreachable. After
@@ -27,6 +29,16 @@ public sealed class GreedySimPilot : ISimPilot
     // ~7 ticks at 60Hz. 60 ticks (1 sim-second) of zero tile-transitions is
     // unambiguously stuck.
     private const int StuckThresholdTicks = 60;
+
+    // Heal-trigger HP fraction. War Cry restores 25 HP at 12s cd / 25 Rage,
+    // so firing it at 50% buys back roughly a full Rage-bar's worth of HP
+    // over the cooldown. Below this, fire on every cooldown tick.
+    private const float WarCryHpFraction = 0.5f;
+
+    // Emergency potion drink. War Cry isn't always available (cooldown,
+    // resource), so the panic threshold sits below the War Cry threshold —
+    // potion is the last-ditch heal, not the primary one.
+    private const float PotionPanicHpFraction = 0.3f;
 
     private bool _initialized;
     private Position _lastPosition;
@@ -122,6 +134,17 @@ public sealed class GreedySimPilot : ISimPilot
         // free swing that punches above auto-attack DPS at melee range.
         if (adjacentCount == 1)
             TryCast(ctx, GameLoopController.SlotIndexM2, nearest.Position);
+
+        // Defensive cooldowns. War Cry is the proactive heal; the potion
+        // is the panic button when War Cry's on cooldown / out of Rage.
+        // Both gate-checks (resource cost, drink cooldown, inventory
+        // count) live inside their respective TryX methods, so calling
+        // them every tick that the threshold trips is safe and cheap.
+        var hpFraction = (float)player.Health / Math.Max(1, player.MaxHealth);
+        if (hpFraction <= WarCryHpFraction)
+            TryCast(ctx, GameLoopController.SlotIndexE);
+        if (hpFraction <= PotionPanicHpFraction)
+            ctx.Loop.TryDrinkHealthPotion();
     }
 
     private static Enemy? NearestLiveEnemy(Player player, IReadOnlyList<Enemy> enemies)

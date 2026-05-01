@@ -63,6 +63,8 @@ public sealed class GameLoopController
     private float _timeSinceLastDamage = OutOfCombatRegenDelaySec;
     private float _regenAccumulator;
     private float _resourceRegenAccumulator;
+    private float _hpPotionCooldown;
+    private float _resourcePotionCooldown;
 
     private readonly SkillDefinition?[] _slotSkills = new SkillDefinition?[SlotCount];
     private readonly float[] _slotCooldowns = new float[SlotCount];
@@ -96,10 +98,41 @@ public sealed class GameLoopController
         Array.Clear(_slotCooldowns, 0, _slotCooldowns.Length);
         _regenAccumulator = 0f;
         _resourceRegenAccumulator = 0f;
+        _hpPotionCooldown = 0f;
+        _resourcePotionCooldown = 0f;
         _timeSinceLastDamage = OutOfCombatRegenDelaySec;
         _combat.Clear();
         _movement.Stop();
         if (resetResource) _player.Resource = 0;
+    }
+
+    public float HealthPotionCooldownRemaining => _hpPotionCooldown;
+    public float ResourcePotionCooldownRemaining => _resourcePotionCooldown;
+
+    // Try to drink an HP potion. Returns true if a potion was actually
+    // consumed (cooldown was clear AND the player had a potion in stock).
+    // Caller (GameScreen for live play, sim pilots for headless) reacts
+    // to the return value for VFX / metrics.
+    public bool TryDrinkHealthPotion()
+    {
+        if (_hpPotionCooldown > 0f) return false;
+        if (!_player.Inventory.TryConsume(Tarpg.Items.Potions.HealthPotion)) return false;
+        _player.Health = Math.Min(
+            _player.MaxHealth,
+            _player.Health + Tarpg.Items.Potions.HealthPotionHealAmount);
+        _hpPotionCooldown = Tarpg.Items.Potions.DrinkCooldownSec;
+        return true;
+    }
+
+    public bool TryDrinkResourcePotion()
+    {
+        if (_resourcePotionCooldown > 0f) return false;
+        if (!_player.Inventory.TryConsume(Tarpg.Items.Potions.ResourcePotion)) return false;
+        _player.Resource = Math.Min(
+            _player.MaxResource,
+            _player.Resource + Tarpg.Items.Potions.ResourcePotionRestoreAmount);
+        _resourcePotionCooldown = Tarpg.Items.Potions.DrinkCooldownSec;
+        return true;
     }
 
     public void GrantResourceOnHit()
@@ -238,6 +271,10 @@ public sealed class GameLoopController
             if (_slotCooldowns[i] > 0f)
                 _slotCooldowns[i] = MathF.Max(0f, _slotCooldowns[i] - deltaSec);
         }
+        if (_hpPotionCooldown > 0f)
+            _hpPotionCooldown = MathF.Max(0f, _hpPotionCooldown - deltaSec);
+        if (_resourcePotionCooldown > 0f)
+            _resourcePotionCooldown = MathF.Max(0f, _resourcePotionCooldown - deltaSec);
 
         TickHpRegen(deltaSec);
         TickResourceRegen(deltaSec);

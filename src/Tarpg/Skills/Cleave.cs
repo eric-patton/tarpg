@@ -8,10 +8,14 @@ namespace Tarpg.Skills;
 // Resource cost gates spamming; cooldown gates back-to-back animation feel.
 public static class Cleave
 {
-    // Damage a Cleave swing deals to each adjacent target. v0 uses the
-    // same value as the auto-attack BaseDamage so "full weapon damage" is
-    // honest — both update together when item-driven damage lands.
-    private const int Damage = 10;
+    // Damage a Cleave swing deals to each adjacent target. Tuned to 14
+    // (auto-attack BaseDamage = 10) so Cleave wins the single-target DPS
+    // race by a small margin (14 dmg / 1.0s = 14 DPS vs 12.5 DPS for the
+    // 0.8s auto-attack), then dominates clusters (2 adj = 28 DPS,
+    // 3 adj = 42 DPS). The 10-Rage cost is what gates spam on lone
+    // targets — a full Rage bar buys 10 Cleaves; you save them for the
+    // packs where they pay off.
+    private const int Damage = 14;
 
     public static readonly SkillDefinition Definition = new()
     {
