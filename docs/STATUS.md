@@ -1,6 +1,6 @@
 # TARPG — Master Status
 
-> **Updated**: 2026-04-30 (equipment system v0 — weapon damage)
+> **Updated**: 2026-04-30 (bag inventory + click-to-equip modal)
 > **Where we are**: continuous-movement Diablo-style ARPG with FOV / fog of war, procgen Wolfwood (BSP) on a 160×60 world surface with an 80×30 sub-cell-smoothed camera-follow viewport, multi-floor descent on Threshold step with per-floor stat + count scaling, three enemy AI archetypes (`melee_charger`, `melee_skirmisher`, `ranged_kiter`), five Wolfwood enemy types (wolf, wolf pup horde, dire wolf, wolfshade skirmisher, howler ranged), v0 hit feedback (flash, damage numbers, kill burst, hit-stop); two playable classes (Reaver melee + Hunter ranged), each with a full 5-slot kit (M2/Q/W/E/R) wired via `WalkerClassDefinition.StartingSlotSkills`; HP / Resource potions drop on enemy kill, render on the floor, pick up on tile-cross, drink with `1` / `2`; two-sided auto-attack combat; forgiving 1.5-tile click-target radius; click indicator pulse + drift-on-unreachable; mouse modes; zoom; bundled square-cell font; on-death floor regen. Headless game-loop core (`GameLoopController`) plus xUnit suite (skills, AIs, BSP, Items, Movement, Combat, slot-wiring) and a `tarpg-sim` CLI that sweeps (floor × seed × class) grids for balance tuning.
 
 This is the running roadmap. Every meaningful change updates the **Recently completed** and **Up next** sections. Before starting work, read this top-to-bottom.
@@ -88,6 +88,7 @@ When you `run`, you get:
 | **2** | Drink Resource potion (`Potions.ResourcePotionRestoreAmount` resource, 0.5s drink cd) |
 | **Shift + Left-click on enemy** | Force-stand-attack — no approach, only swings if adjacent |
 | **Shift + Left-click on empty floor** | Stop walking in place (only when there's no active combat target) |
+| **`I`** | Open / close inventory (pauses world; click bag to equip / swap; click equipped to unequip; Esc also closes) |
 | **`+` / `-` / mouse wheel** | Zoom: 0.5×, 1×, 1.5×, 2×, 2.5×, 3× |
 
 ### Tunable constants (single source of truth)
@@ -173,6 +174,18 @@ When you `run`, you get:
 ---
 
 ## Recently completed (newest first)
+
+### Bag inventory + click-to-equip modal (replaces auto-equip)
+- **Removed auto-equip** — pickups now go to a 32-slot bag instead of clobbering the equipped weapon. Per the user feedback, auto-equip is build-killing in ARPGs where affixes / sockets / set bonuses can make a "weaker" weapon the better choice. The player decides via the inventory screen.
+- **`Inventory/Inventory.cs`** — adds `MaxBagSlots = 32`, a `_bag` list of nullable `ItemDefinition` slots, plus `BagItems` (read), `BagCount` (live count), `IsBagFull`, `TryAddToBag` (returns false at capacity), `RemoveFromBag`, and `BagSet` (direct-write, used by atomic-swap equip). Empty mid-list slots get filled before the list grows so item ordering stays stable across pickup / equip cycles.
+- **`Entities/Player.cs`** — `PickUp` now returns `bool` (false → bag full → caller leaves the FloorItem on the ground). New `EquipFromBag(int)` does an atomic swap (the previously-equipped item, if any, drops into the just-vacated bag slot) so equipping never grows the bag count. New `UnequipToBag(ItemSlot)` fails when the bag is full — player has to drop something first.
+- **`Core/GameLoopController.cs`** — `TryPickupFloorItems` only removes the FloorItem when `PickUp` returns true, so a full-bag situation leaves the loot recoverable. Previously the FloorItem was always removed regardless.
+- **`UI/InventoryScreen.cs`** (new) — modal overlay child of GameScreen. Equipment panel (left half) lists all 8 ItemSlot enum values; bag panel (right half) lists items numbered + colored by tier (white Normal / blue Magic / yellow Rare / orange Legendary / green Set). Click semantics: bag-row click equips/swaps; equipped-row click unequips back to bag; `I` or `Esc` closes. Solid-black background fill stops the world layer beneath bleeding through transparent cells.
+- **`UI/GameScreen.cs`** — `_inventoryScreen` added as a child Console at the END of the children list (top of the z-stack). `I` toggles. `Update` short-circuits while the modal is visible (gameplay pauses — enemies frozen, regen frozen, cooldowns frozen). `ProcessMouse` short-circuits to base routing while the modal is visible (otherwise the world's "click on tile to walk" logic would consume the click before it reached the modal). Zoom propagates to the modal's FontSize so `+`/`-` still work consistently.
+- **Tier color palette**: White (Normal), Blue (Magic), Yellow (Rare), Orange (Legendary), Green (Set). Matches Diablo conventions; carries the rarity at a glance so item rows can stay compact (no need to spell out "Magic Weapon" — the blue tells you).
+- **What's deferred** (logged in Open Questions): true drag-and-drop (click-to-equip is fine for v0); equipment slots beyond Weapon (Helm/Chest/Hands/Feet/Ring/Amulet/Offhand all show "--"); item tooltips on hover; right-click-to-drink-from-bag for consumables; sort / filter buttons; bag stack-merging for identical items.
+- **Tests** — `Items/EquipmentTests.cs` adds: `PickUp_Weapon_GoesToBagNotAutoEquip`, `PickUp_FullBag_ReturnsFalse`, `EquipFromBag_BareHanded_EquipsAndRemovesFromBag`, `EquipFromBag_WithCurrentWeapon_AtomicallySwaps` (bag count conserved), `UnequipToBag_FullBag_ReturnsFalse`, `UnequipToBag_RoomInBag_MovesEquippedToBag`. Existing `TryAttack_WithEquippedWeapon` updated to explicit equip path (PickUp → EquipFromBag(0)).
+- **Visual verification**: harness end-to-end run captured in `debug/inv-*.png`. Open / equip / atomic-swap / unequip / close all working.
 
 ### Equipment system v0 — weapon damage flows from drops to auto-attack
 - **First real loot loop**. Enemies occasionally drop weapons (RustyKnife / IronBlade) on kill alongside potions; bosses deterministically drop their signature legendary (Wolfbreaker). Weapons auto-equip if the slot is empty OR the new piece's `WeaponDamageBonus` exceeds the current weapon's. Equipped weapon's bonus is added on top of the unarmed baseline (`CombatController.BaseDamage = 10`) inside `Player.WeaponDamage`, which `CombatController.TryAttack` now reads instead of the flat const.
@@ -546,7 +559,7 @@ When you `run`, you get:
 ### Mid-term — skills and loot
 - [ ] **All four classes' starter skills** (~10 per class = ~40 skills) — wire into right-click skill slot for v0.
 - [x] ~~**Loot drop on enemy kill**: dropped items render as glyphs on tile, walk over to pick up.~~ — v0 shipped (potions + weapons drop; auto-equip-if-better; HUD shows weapon name).
-- [ ] **Inventory UI**: 32-slot bag + 8 equipment slots, drag to equip, right-click to use consumable. **Status**: Player.EquippedWeapon + auto-equip-if-better in place; bag list + manual swap UI still to land.
+- [x] ~~**Inventory UI**: 32-slot bag + 8 equipment slots, drag to equip, right-click to use consumable.~~ — bag + click-to-equip modal shipped (drag deferred — click is sufficient for v0). All 8 equipment slots visible; only Weapon slot wired to gameplay so far.
 - [ ] **Item tier system end-to-end**: drop with rarity color, unidentified Rare+ shroud, Reading Stone in town for ID.
 - [x] ~~**Wolf-Mother boss**: first iconic encounter, signature mechanic (pack summon? leap?), Wolfbreaker drop.~~ — v0 shipped (140 HP / 10 dmg / 1.4s cd melee_charger on F5 only). **Still open**: pup-summon signature mechanic (deferred until `IEnemyAi` gains spawn capability); F10 boss; equipment-side effect of Wolfbreaker pickup (waits on equipment system).
 
@@ -605,8 +618,9 @@ These are in GDD section 14 — known unknowns we'll figure out by prototyping, 
 - **Whirlwind is undertuned at depth** — 15 dmg per enemy in a 5×5 area for 30 Rage / 6s cd. At F10 enemies have ~32 HP, so Whirlwind doesn't even half-kill a wolf — the 30-Rage spend (60% of a full bar) doesn't feel like a payoff. Round-1 balance pass focused on Reaver sustain (where deaths actually were); Whirlwind buff is a candidate for round 2 if the kit still feels offense-light in live play.
 - **Wolf-Mother is melee_charger only (no signature mechanic yet)** — the GDD calls out pack-summon as her identity beat, but `IEnemyAi.Tick` today owns one actor and has no path to inject new enemies into the world. Adding the summon needs either a "spawn request" return value on the AI tick or an event the orchestrator subscribes to. Tracked for round 2 of boss work; v0 ships her as a high-HP charger so the boss-arena loop is testable.
 - **Skill damage stays flat — only auto-attack benefits from weapons** — Cleave / HeavyStrike / Whirlwind etc. have hard-coded per-skill damage constants. Future refactor: route skill damage through Player.WeaponDamage so the Reaver Q-W-E-R kit scales with the equipped weapon. Not done in v0 because skills also have AOE / radius / cooldown identity that doesn't trivially scale linearly with weapon damage — needs a per-skill scaling factor.
-- **Replaced weapons are silently discarded** — auto-equip-if-better drops the previous weapon when upgrading. No bag yet, so there's no place to put the old one. Loss is imperceptible today (drops are rare and downgrades stay equipped) but will need addressing when the inventory UI lands so players can choose what to keep.
-- **Equipment slots beyond Weapon are stubbed** — ItemSlot enum has Helm / Chest / Boots / Ring / Amulet / Artifact / Charm but `Player.PickUp` silently discards them. They'll wire up in parallel as their gameplay effects (armor reduces damage, ring grants resource regen, etc.) get designed.
+- **Equipment slots beyond Weapon don't load equipped items** — pickups for Head / Chest / Hands / Feet / Offhand / Ring / Amulet land in the bag (correct), but `Player.GetEquipped` / `SetEquipped` only knows about the Weapon slot. Clicking a non-weapon item in the bag silently fails to equip. They'll wire up as their gameplay effects (armor reduces damage, ring grants resource regen, etc.) get designed.
+- **Click-to-equip, no drag-and-drop** — current click semantics: click a bag row to equip (or atomic-swap), click an equipped row to unequip. Works fine for v0 but lacks the "preview before commit" feedback dragging would give. Adding drag is mostly mouse-state machinery (down/up tracking, ghost item, hit-test on slots) — deferred until the rest of the inventory matures (tooltips, item compare, sort/filter).
+- **No item tooltips / compare** — bag and equipment rows show name + bonus inline. Hover-tooltips with full affix breakdown + stat-delta-vs-equipped land when the affix system does (today's items are stub-tier with just `WeaponDamageBonus`).
 - **Wolfbreaker's legendary effect doesn't fire yet** — `WolfbreakerEffect.Description` says "your basic attacks against bleeding enemies deal +50% damage and refund Rage" but there's no bleed system, no on-hit trigger pipeline. For v0 Wolfbreaker contributes via its WeaponDamageBonus (+12) only. The bleed + refund mechanic lands when the on-hit trigger system does.
 - **Camera tracks player center exactly** — no dead zone, lookahead, or velocity-aware easing. Sub-cell pixel smoothing is in place (no cell-snap pop), but rapid direction changes still translate 1:1 to camera moves; could add a small dead zone around the player if it ever feels twitchy.
 - **Cellular automata pass for forest feel deferred** — listed under Polish / juice. Needs flood-fill connectivity repair before BSP+CA is safe.
@@ -656,6 +670,7 @@ src/Tarpg/
   UI/
     GameScreen.cs                     orchestrator — input, render, tick (top HUD + bottom panel children)
     ClassSelectScreen.cs              title screen — pick a walker before the run starts
+    InventoryScreen.cs                modal bag + equipment overlay (toggled with 'i'; pauses the world)
     Effects/
       HitFeedback.cs                  flash + damage numbers + kill burst + hit-stop
       ClickIndicator.cs               brief "+" pulse on left-button release

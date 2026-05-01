@@ -33,13 +33,18 @@ public sealed class Player : Entity
     public int WeaponDamage =>
         Tarpg.Combat.CombatController.BaseDamage + (EquippedWeapon?.WeaponDamageBonus ?? 0);
 
-    // Pickup funnel. Routes by item shape: consumables stack in
-    // Inventory; weapons hit the auto-equip path; everything else is
-    // silently discarded for now (no bag yet). GameLoopController calls
-    // this from TryPickupFloorItems instead of going straight to
-    // Inventory.Add so equipment doesn't get swallowed by the consumable
-    // gate.
-    public void PickUp(ItemDefinition item)
+    // Pickup funnel. Routes by item shape: consumables stack in the
+    // dedicated potion counters; equipment goes to the bag (NOT auto-
+    // equipped — ARPG item choice is build-dependent and the player
+    // explicitly equips via the inventory screen). Returns true if
+    // the item was actually claimed; false leaves the FloorItem on
+    // the ground for the player to come back to (typical case: bag
+    // full and the equipment can't fit yet).
+    //
+    // GameLoopController calls this from TryPickupFloorItems and only
+    // removes the FloorItem from the floor when it returns true, so
+    // a failed pickup doesn't silently consume the loot.
+    public bool PickUp(ItemDefinition item)
     {
         if (item.Slot == ItemSlot.None)
         {
@@ -47,30 +52,68 @@ public sealed class Player : Entity
             // on items it doesn't recognize, which keeps unsupported
             // consumables from breaking the pickup pipeline.
             Inventory.Add(item);
-            return;
+            return true;
         }
-        if (item.Slot == ItemSlot.Weapon)
-        {
-            TryEquipWeapon(item);
-            return;
-        }
-        // Non-weapon equipment (armor, ring, ...) lands in this branch
-        // when its slots get wired. For now silently discarded — pickup
-        // visual still fires (the FloorItem is removed from the floor
-        // by the loop), but the player's loadout doesn't change.
+        // Equipment of any slot (Weapon today; Helm/Chest/Ring/etc.
+        // will populate as their gameplay effects land) goes to the
+        // bag. The TryEquipFromBag path is what moves things onto
+        // the loadout; pickup is just storage.
+        return Inventory.TryAddToBag(item);
     }
 
-    // Auto-equip rule: take the new weapon if we're bare-handed OR if
-    // its WeaponDamageBonus is strictly higher than the currently-
-    // equipped piece. Ties keep the current weapon (defensive — the
-    // player would manually swap once a UI exists). The replaced
-    // weapon is silently discarded today (no bag).
-    private void TryEquipWeapon(ItemDefinition weapon)
+    // Equip the item at the given bag index. Atomic swap: any item
+    // currently equipped in the destination slot moves to the freed
+    // bag slot, so the operation always succeeds (bag count is
+    // unchanged). Returns false only if the bag index is empty / out
+    // of range — meaning "you tried to equip nothing."
+    public bool EquipFromBag(int bagIndex)
     {
-        if (EquippedWeapon is null
-            || weapon.WeaponDamageBonus > EquippedWeapon.WeaponDamageBonus)
+        var item = Inventory.BagItems.ElementAtOrDefault(bagIndex);
+        if (item is null) return false;
+        if (item.Slot == ItemSlot.None) return false;
+
+        // Pull the bag item out, then write the previously-equipped
+        // piece (if any) into the now-empty bag slot. Net bag count
+        // is conserved; equipped slot reflects the new item.
+        Inventory.RemoveFromBag(bagIndex);
+        var previouslyEquipped = GetEquipped(item.Slot);
+        SetEquipped(item.Slot, item);
+        if (previouslyEquipped is not null)
+            Inventory.BagSet(bagIndex, previouslyEquipped);
+        return true;
+    }
+
+    // Unequip the item in the given slot back into the bag. Fails if
+    // the bag is full (no room for the unequipped piece) — the player
+    // has to drop / sell something first.
+    public bool UnequipToBag(ItemSlot slot)
+    {
+        var item = GetEquipped(slot);
+        if (item is null) return false;
+        if (Inventory.IsBagFull) return false;
+
+        SetEquipped(slot, null);
+        Inventory.TryAddToBag(item);
+        return true;
+    }
+
+    // Read / write helpers so EquipFromBag / UnequipToBag don't have
+    // a switch tower. Adding new equipment slots = extend this switch
+    // and add the corresponding field; everything else flows through.
+    public ItemDefinition? GetEquipped(ItemSlot slot) => slot switch
+    {
+        ItemSlot.Weapon => EquippedWeapon,
+        _ => null, // Other slots (Helm/Chest/Ring/...) not wired yet.
+    };
+
+    private void SetEquipped(ItemSlot slot, ItemDefinition? item)
+    {
+        switch (slot)
         {
-            EquippedWeapon = weapon;
+            case ItemSlot.Weapon: EquippedWeapon = item; break;
+            // Other slots no-op until their fields exist; PickUp accepts
+            // them into the bag, but EquipFromBag will silently fail to
+            // route them to a loadout slot. Tracked in STATUS open issues.
         }
     }
 

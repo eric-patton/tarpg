@@ -314,12 +314,12 @@ public sealed class GameLoopController
         for (var i = _floorItems.Count - 1; i >= 0; i--)
         {
             if (_floorItems[i].Position != playerTile) continue;
-            // Route through Player.PickUp so equipment hits the auto-
-            // equip path and consumables stack in inventory. Calling
-            // Inventory.Add directly would swallow weapon drops since
-            // Inventory only knows about consumables.
-            _player.PickUp(_floorItems[i].Item);
-            _floorItems.RemoveAt(i);
+            // Player.PickUp routes consumables to potion counters and
+            // equipment to the bag. Returns false when the bag is full
+            // (equipment can't fit) — leave the FloorItem on the floor
+            // so the player can drop something and come back for it.
+            if (_player.PickUp(_floorItems[i].Item))
+                _floorItems.RemoveAt(i);
         }
     }
 

@@ -121,6 +121,11 @@ public sealed class GameScreen : SadConsole.Console
     private readonly StatusPanel _statusPanel;
     private readonly SkillVfx _skillVfx;
 
+    // Inventory modal — child Console toggled visible by the 'i' key.
+    // While visible, gameplay pauses (Update skips loop.Tick) and input
+    // routes to the modal. See ToggleInventory + Update for the gating.
+    private InventoryScreen? _inventoryScreen;
+
     private readonly int _viewportCellsW;
     private readonly int _viewportCellsH;
 
@@ -287,6 +292,15 @@ public sealed class GameScreen : SadConsole.Console
         foreach (var spawn in floor.EnemySpawnPoints)
             SpawnPack(PickEnemyForZone(), spawn);
 
+        // Inventory modal sits on TOP of every other console so it
+        // covers the world / HUD when toggled visible. UseMouse=true
+        // so clicks land on the modal rather than passing through to
+        // the world; UseKeyboard=true so Esc / 'i' close it.
+        _inventoryScreen = new InventoryScreen(
+            viewportWidth, viewportHeight, _player,
+            onClose: OnInventoryClosed);
+        Children.Add(_inventoryScreen);
+
         // Apply the configured base font size to all consoles, then size
         // the OS window to the viewport (NOT the world surface).
         FontSize = BaseFontSize;
@@ -294,11 +308,26 @@ public sealed class GameScreen : SadConsole.Console
         _flashOverlay.FontSize = BaseFontSize;
         _hudConsole.FontSize = BaseFontSize;
         _bottomHudConsole.FontSize = BaseFontSize;
+        _inventoryScreen.FontSize = BaseFontSize;
         Game.Instance.ResizeWindow(_viewportCellsW, _viewportCellsH, BaseFontSize, true);
 
         SyncPlayerVisual();
         SyncEnemyVisuals();
         DrawHud();
+    }
+
+    private void OnInventoryClosed()
+    {
+        // Restore focus to the GameScreen so the world's input
+        // (movement clicks, skill keys) starts firing again.
+        IsFocused = true;
+    }
+
+    private void ToggleInventory()
+    {
+        if (_inventoryScreen is null) return;
+        if (_inventoryScreen.IsVisible) _inventoryScreen.Close();
+        else _inventoryScreen.Open();
     }
 
     // Place PackSize copies of `def` around `center`. Filling order: center
@@ -638,6 +667,15 @@ public sealed class GameScreen : SadConsole.Console
 
     public override void Update(TimeSpan delta)
     {
+        // Inventory modal pauses gameplay — skip the world tick / camera
+        // / hud refresh. SadConsole still calls our base Update so child
+        // consoles (the modal itself) keep ticking + rendering.
+        if (_inventoryScreen is not null && _inventoryScreen.IsVisible)
+        {
+            base.Update(delta);
+            return;
+        }
+
         var deltaSec = (float)delta.TotalSeconds;
         // Aspect ratio derived from the *rendered* cell size (FontSize),
         // not the underlying font asset, so this stays correct under both
@@ -734,6 +772,11 @@ public sealed class GameScreen : SadConsole.Console
         if (keyboard.IsKeyPressed(Keys.D1)) TryDrinkHealthPotion();
         if (keyboard.IsKeyPressed(Keys.D2)) TryDrinkResourcePotion();
 
+        // 'I' opens the inventory modal. The modal also closes on 'I'
+        // (handled inside InventoryScreen.ProcessKeyboard once it has
+        // focus), so this only fires when the modal is closed.
+        if (keyboard.IsKeyPressed(Keys.I)) ToggleInventory();
+
         return base.ProcessKeyboard(keyboard);
     }
 
@@ -753,6 +796,12 @@ public sealed class GameScreen : SadConsole.Console
 
     public override bool ProcessMouse(MouseScreenObjectState state)
     {
+        // Inventory modal owns input while visible — let the base
+        // routing dispatch the click to the InventoryScreen child
+        // instead of letting GameScreen interpret it as a walk / attack.
+        if (_inventoryScreen is not null && _inventoryScreen.IsVisible)
+            return base.ProcessMouse(state);
+
         if (!state.IsOnScreenObject) return base.ProcessMouse(state);
 
         // Mouse wheel zoom.
@@ -837,6 +886,7 @@ public sealed class GameScreen : SadConsole.Console
         _flashOverlay.FontSize = newSize;
         _hudConsole.FontSize = newSize;
         _bottomHudConsole.FontSize = newSize;
+        if (_inventoryScreen is not null) _inventoryScreen.FontSize = newSize;
 
         // Resize the OS window to match the new pixel dimensions of the
         // *viewport*, not the world surface.
